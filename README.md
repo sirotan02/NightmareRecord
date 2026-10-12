@@ -1,6 +1,6 @@
 # 🦭 Nightmare Eater · 噩夢記錄器
 
-手機優先的私人夢境手帳。HTML、CSS、原生 JavaScript；無建置依賴、無後端、無追蹤服務。海豹只負責吃。
+sirotan02的夢境手帳。HTML、CSS、原生 JavaScript；無建置依賴、無後端、無追蹤服務。海豹只負責吃。
 
 ## 本機預覽
 
