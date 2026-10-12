@@ -1,0 +1,7 @@
+{
+  "name": "nightmare-eater",
+  "private": true,
+  "engines": { "node": ">=20" },
+  "type": "module",
+  "scripts": { "start": "node server.mjs", "test": "node --test tests/*.test.js", "check": "node --check app.js && node --check core.js && node --check storage.js && node --check sw.js" }
+}

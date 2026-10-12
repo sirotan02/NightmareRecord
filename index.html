@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#172629">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="把昨晚留下來，剩下的交給海豹。私人、本機儲存的噩夢日記。">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="stylesheet" href="./styles.css">
+  <title>Nightmare Eater · 噩夢記錄器</title>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header"><a href="#home" class="brand"><span class="brand-mark">☾</span><span>nightmare eater<small>你的私人夢境手帳</small></span></a><button class="icon-button" id="settings-button" aria-label="設定與備份">⚙</button></header>
+    <main id="app" tabindex="-1"></main>
+    <nav class="bottom-nav" aria-label="主要導覽">
+      <a href="#home" data-page="home"><span aria-hidden="true">☾</span>記錄</a>
+      <a href="#calendar" data-page="calendar"><span aria-hidden="true">▦</span>日曆</a>
+      <a href="#stats" data-page="stats"><span aria-hidden="true">▥</span>觀察</a>
+      <a href="#seal" data-page="seal"><span aria-hidden="true">🦭</span>海豹</a>
+    </nav>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="modal"><div id="modal-content"></div></dialog>
+  <noscript>請開啟 JavaScript，讓海豹幫你保存夢境。資料只儲存在這部裝置。</noscript>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
