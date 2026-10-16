@@ -4,7 +4,7 @@ export const EXP = { N: 10, R: 20, SR: 50, SSR: 150, SSSR: 500 };
 export const STATUS = { yes: '💀 有噩夢', no: '😴 沒有噩夢', unknown: '❓ 不記得' };
 export const METRICS = { sleepDisruption: '睡眠影響', distress: '醒來難受程度', contentIntensity: '內容強度' };
 export const DEFAULT_TAGS = {
-  contentTags: ['被追逐', '被困', '威脅', '暴力', '死亡', '他人死亡', '自己受傷', '身體異常', '安全場所失效', '陌生人', '冒充熟人', '無法求助', '性威脅 / 性侵', '墜落', '超現實', '場景突然切換', '失憶', '時間異常', '家人', '伴侶', '嘗試救人', '其他'],
+  contentTags: ['被追逐', '被困', '威脅', '暴力', '死亡', '他人死亡', '自己受傷', '身體異常', '安全場所失效', '陌生人', '冒充熟人', '無法求助', '性威脅 / 性侵', '墜落', '超現實', '場景突然切換', '失憶', '時間異常', '家人', '伴侶', '嘗試救人', '迷路', '遲到', '考試 / 學業', '工作 / 任務失敗', '被監視', '被拒絕 / 排斥', '背叛', '失去重要的人', '自然災害', '交通事故', '鬼怪 / 靈異', '無法動彈', '窒息 / 無法呼吸', '牙齒脫落', '其他'],
   structures: ['輪迴 / Recurring', '逃亡 / Chase', '侵入 / Intrusion', '敘事 / Narrative', '碎片 / Fragmented', '規則改變 / Rule Shift', '救援失敗 / Rescue Failure', '其他'],
   fearReasons: ['失去控制', '無法逃脫', '被追', '身體被傷害', '他人死亡', '無法保護重要的人', '安全的地方突然不安全', '周圍的人無法察覺', '被冒充 / 身份錯亂', '世界規則失效', '不知道接下來會發生甚麼', '被迫服從', '無法求助', '其他']
 };
@@ -25,12 +25,13 @@ export function setNightStatus(data, date, status) {
   if (status !== 'yes') data.dreams = data.dreams.filter(d => d.date !== date || d.sleepType !== 'night');
   upsertDay(data, date, { status });
 }
-export function saveDream(data, dream) {
+export function saveDream(data, dream, sleepHours = undefined) {
+  if (dream.sleepType === 'night' && sleepHours !== undefined && !validSleepHours(sleepHours)) throw new Error('睡眠時數請填 0–24，或留空');
   const previous = data.dreams.find(d => d.id === dream.id);
   data.dreams = data.dreams.filter(d => d.id !== dream.id);
   const now = new Date().toISOString();
   data.dreams.push({ ...dream, createdAt: previous?.createdAt || dream.createdAt || now, updatedAt: now });
-  upsertDay(data, dream.date, dream.sleepType === 'night' ? { status: 'yes' } : {});
+  upsertDay(data, dream.date, dream.sleepType === 'night' ? { status: 'yes', ...(sleepHours === undefined ? {} : { sleepHours }) } : {});
   // A previous explicit "yes" remains valid even if its only detailed episode is moved or deleted.
 }
 export function rewards(data) {
@@ -41,6 +42,25 @@ export function rewards(data) {
   return { exp, fish: data.daily.filter(d => d.status === 'no').length, level: 1 + Math.floor(exp / 100), progress: exp % 100 };
 }
 export const mean = values => { const filled = values.filter(v => typeof v === 'number' && Number.isFinite(v)); return filled.length ? filled.reduce((a, b) => a + b, 0) / filled.length : null; };
+export const validSleepHours = value => value === null || typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 24;
+export function sleepAnalysis(data, start, end) {
+  const recorded = data.daily.filter(day => day.date >= start && day.date <= end && day.status !== null);
+  const eligible = recorded.filter(day => day.sleepHours !== null && validSleepHours(day.sleepHours));
+  const summarize = days => {
+    const yes = days.filter(day => day.status === 'yes').length;
+    const no = days.filter(day => day.status === 'no').length;
+    const unknown = days.filter(day => day.status === 'unknown').length;
+    const metrics = {};
+    for (const key of [...Object.keys(METRICS), 'rarity']) {
+      const nightly = days.filter(day => day.status === 'yes').map(day => mean(data.dreams.filter(d => d.sleepType === 'night' && d.date === day.date).map(d => key === 'rarity' ? (d.rarity ? RARITIES.indexOf(d.rarity) + 1 : null) : d[key])));
+      metrics[key] = { value: mean(nightly), count: nightly.filter(value => value !== null).length };
+    }
+    return { count: days.length, yes, no, unknown, known: yes + no, rate: yes + no ? yes / (yes + no) : null, recallUnknownRate: days.length ? unknown / days.length : null, meanHours: mean(days.map(day => day.sleepHours)), metrics };
+  };
+  const groups = [{label:'少於 5 小時',min:0,max:5},{label:'5–未滿 7 小時',min:5,max:7},{label:'7–未滿 9 小時',min:7,max:9},{label:'9 小時以上',min:9,max:Infinity}].map(group => ({ label: group.label, ...summarize(eligible.filter(day => day.sleepHours >= group.min && day.sleepHours < group.max)) }));
+  return { ...summarize(eligible), recorded: recorded.length, missingHours: recorded.length - eligible.length, groups,
+    byStatus: ['yes','no','unknown'].map(status => { const days = eligible.filter(day => day.status === status); return { status, count: days.length, meanHours: mean(days.map(day => day.sleepHours)) }; }) };
+}
 export const recurring = dream => Boolean(dream.seriesId) || dream.structures.includes('輪迴 / Recurring');
 export function statistics(data, start, end, type = 'night') {
   const days = data.daily.filter(d => d.date >= start && d.date <= end);
@@ -67,7 +87,8 @@ export function trend(data, start, end, type, windowDays) {
   return datesBetween(start, end).map(date => {
     const first = shiftDate(date, -(windowDays - 1));
     const s = statistics(data, first, date, type);
-    return { date, rate: s.rate, dreams: s.dreams, ...Object.fromEntries(Object.entries(s.metrics).map(([k, v]) => [k, v.value])) };
+    const sleepHours = mean(data.daily.filter(day => day.date >= first && day.date <= date && day.status !== null).map(day => day.sleepHours));
+    return { date, rate: s.rate, dreams: s.dreams, sleepHours, ...Object.fromEntries(Object.entries(s.metrics).map(([k, v]) => [k, v.value])) };
   });
 }
 export function validateData(input) {
@@ -110,6 +131,9 @@ export function validateData(input) {
       for (const key of ['dreamMemory','predictedEvent','lucid']) drafts.editor[key] = ['yes','no','unsure'].includes(draft[key]) ? draft[key] : null;
       drafts.editor.changedOutcome = ['yes','no','partially'].includes(draft.changedOutcome) ? draft.changedOutcome : null;
       for (const key of ['createdAt','updatedAt']) if (isTime(draft[key])) drafts.editor[key] = draft[key];
+      if (draft.sleepHoursByDate && typeof draft.sleepHoursByDate === 'object' && !Array.isArray(draft.sleepHoursByDate)) {
+        drafts.editor.sleepHoursByDate = Object.fromEntries(Object.entries(draft.sleepHoursByDate).filter(([date,value]) => validDate(date) && validSleepHours(value)));
+      }
     }
   }
   return { version: VERSION, daily, dreams, series, settings: { customTags, reducedMotion: settings.reducedMotion, lastExportAt: settings.lastExportAt || null, changedAt: settings.changedAt || null }, drafts };

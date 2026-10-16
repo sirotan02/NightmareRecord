@@ -1,4 +1,4 @@
-const CACHE = 'nightmare-eater-shell-v3';
+const CACHE = 'nightmare-eater-shell-v4';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './core.js', './storage.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS))));
 // New workers wait until all existing windows are closed: no forced reload while editing.

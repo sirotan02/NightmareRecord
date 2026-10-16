@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyData, dateKey, shiftDate, validDate, upsertDay, setNightStatus, saveDream, rewards, statistics, trend, validateData, mergeData, csv } from '../core.js';
+import { emptyData, dateKey, shiftDate, validDate, upsertDay, setNightStatus, saveDream, rewards, statistics, trend, validateData, mergeData, csv, sleepAnalysis } from '../core.js';
 import { readData, writeData, recoverableImport, KEY, RECOVERY_KEY } from '../storage.js';
 const dream = (id,date,sleepType='night',patch={}) => ({ id,date,sleepType,rarity:null,distress:null,sleepDisruption:null,contentIntensity:null,description:'',contentTags:[],structures:[],fearReasons:[],seriesId:null,dreamMemory:null,predictedEvent:null,changedOutcome:null,lucid:null,...patch });
 const fixture = () => {
@@ -75,4 +75,32 @@ test('storage errors do not overwrite data; recovery written before import',()=>
 });
 test('CSV quotes multiline content and guards spreadsheet formulas',()=>{
   const result=csv([['內容','空白','公式'],['"夢"\n第二行',null,'=1+1']]);assert.ok(result.startsWith('\ufeff'));assert.ok(result.includes('""夢""\n第二行'));assert.ok(result.includes('"\'=1+1"'));
+});
+test('night episodes save shared hours atomically; omitted hours preserve them and naps cannot overwrite',()=>{
+  const data=emptyData();saveDream(data,dream('a','2026-10-01'),6.5);saveDream(data,dream('b','2026-10-01'));
+  assert.equal(data.daily.length,1);assert.equal(data.daily[0].sleepHours,6.5);assert.equal(data.dreams[0].sleepHours,undefined);
+  saveDream(data,dream('nap','2026-10-01','nap'),12);assert.equal(data.daily[0].sleepHours,6.5);
+  saveDream(data,{...data.dreams[0]},0);assert.equal(data.daily[0].sleepHours,0);
+  saveDream(data,{...data.dreams[0]},null);assert.equal(data.daily[0].sleepHours,null);
+  const before=JSON.stringify(data);for(const value of [-1,25,NaN,Infinity,'6'])assert.throws(()=>saveDream(data,dream('bad','2026-10-02'),value));assert.equal(JSON.stringify(data),before);
+});
+test('sleep groups use exact boundaries, known-night denominators and separate unknown recall',()=>{
+  const data=emptyData();
+  for(const [date,hours,status] of [['2026-10-01',0,'yes'],['2026-10-02',4.9,'unknown'],['2026-10-03',5,'no'],['2026-10-04',7,'yes'],['2026-10-05',9,'unknown'],['2026-10-06',24,'no'],['2026-10-07',null,'yes'],['2026-10-08',8,null],['2026-09-30',2,'yes']])upsertDay(data,date,{sleepHours:hours,status});
+  saveDream(data,dream('nap','2026-10-03','nap',{distress:5}));
+  const s=sleepAnalysis(data,'2026-10-01','2026-10-08');assert.equal(s.count,6);assert.equal(s.recorded,7);assert.equal(s.missingHours,1);assert.equal(s.rate,.5);
+  assert.deepEqual(s.groups.map(g=>g.count),[2,1,1,2]);assert.deepEqual(s.groups.map(g=>g.rate),[1,0,1,0]);assert.equal(s.groups[0].recallUnknownRate,.5);assert.equal(s.groups[3].recallUnknownRate,.5);assert.equal(s.byStatus[0].meanHours,3.5);
+});
+test('sleep associations weight each night once and ignore nap ratings and unfilled values',()=>{
+  const data=emptyData();saveDream(data,dream('a','2026-10-01','night',{distress:0,rarity:'N'}),6);saveDream(data,dream('b','2026-10-01','night',{distress:4,rarity:'SSR'}));saveDream(data,dream('c','2026-10-02','night',{distress:5}),6.5);saveDream(data,dream('nap','2026-10-01','nap',{distress:5}));
+  const s=sleepAnalysis(data,'2026-10-01','2026-10-02');assert.equal(s.count,2);assert.equal(s.metrics.distress.value,3.5);assert.equal(s.metrics.distress.count,2);assert.equal(s.metrics.rarity.value,2.5);assert.equal(s.metrics.sleepDisruption.value,null);
+  const empty=sleepAnalysis(data,'2027-01-01','2027-01-30');assert.equal(empty.rate,null);assert.equal(empty.meanHours,null);assert.equal(empty.groups[0].recallUnknownRate,null);
+});
+test('sleep drafts preserve per-date values across JSON restore without changing existing records',()=>{
+  const data=fixture();data.drafts.editor={...dream('draft','2026-10-12'),sleepHoursByDate:{'2026-10-12':6.5,'2026-10-13':null,'2026-10-14':0,'invalid':8,'2026-10-15':-1}};
+  const restored=validateData(JSON.parse(JSON.stringify(data)));assert.deepEqual(restored.drafts.editor.sleepHoursByDate,{'2026-10-12':6.5,'2026-10-13':null,'2026-10-14':0});assert.deepEqual(restored.daily,data.daily);
+});
+test('sleep rolling averages count recorded nights once, include unknown and retain gaps',()=>{
+  const data=emptyData();upsertDay(data,'2026-10-01',{status:'yes',sleepHours:4});upsertDay(data,'2026-10-02',{status:'unknown',sleepHours:8});upsertDay(data,'2026-10-03',{status:null,sleepHours:20});
+  const points=trend(data,'2026-10-02','2026-10-03','night',2);assert.equal(points[0].sleepHours,6);assert.equal(points[1].sleepHours,8);assert.equal(trend(data,'2026-10-04','2026-10-04','night',1)[0].sleepHours,null);
 });

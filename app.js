@@ -1,4 +1,4 @@
-import { RARITIES, STATUS, METRICS, DEFAULT_TAGS, uid, dateKey, shiftDate, dayRecord, upsertDay, setNightStatus, saveDream, rewards, statistics, trend, validateData, mergeData, csv, validDate } from './core.js';
+import { RARITIES, STATUS, METRICS, DEFAULT_TAGS, uid, dateKey, shiftDate, dayRecord, upsertDay, setNightStatus, saveDream, rewards, statistics, trend, validateData, mergeData, csv, validDate, sleepAnalysis } from './core.js';
 import { readData, writeData, recoverableImport, KEY, RECOVERY_KEY } from './storage.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -60,7 +60,7 @@ function renderHome() {
   ${data.drafts.editor ? '<div class="note row between"><span>有一個還沒餵給海豹的夢。</span><button class="small" data-action="resume-draft">繼續寫</button></div>' : ''}
   ${day.status ? `<section class="card section-space"><p class="eyebrow">已經留下來了</p><h2>${STATUS[day.status]}</h2><p class="micro">${formatDate(homeDate)} · ${dreams.filter(d=>d.sleepType==='night').length} 個夜間夢</p><div class="row"><button data-action="edit-night" class="secondary">編輯狀態</button><button data-action="new-dream" data-type="night" data-date="${homeDate}" class="primary">＋再記一個夢</button></div></section>` : renderStatusOptions(homeDate)}
   <button class="quiet-link" data-action="new-dream" data-type="nap" data-date="${localToday()}">☀ ＋記午覺的夢</button>
-  <details class="section-space"><summary>夜間睡眠時數 <span class="micro">${day.sleepHours === null ? '想填再填' : `${day.sleepHours} 小時`}</span></summary><div><form id="hours-form" class="row"><label class="field" style="flex:1;margin:0">大約睡了幾小時？<input name="sleepHours" type="number" min="0" max="24" step="0.1" inputmode="decimal" value="${day.sleepHours ?? ''}" placeholder="例如 6.5；留空為未填"></label><button type="submit" class="small">保存</button></form></div></details>
+  <details class="section-space"><summary>夜間睡眠時數 <span class="micro">${day.sleepHours === null ? '想填再填' : `${day.sleepHours} 小時`}</span></summary><div><form id="hours-form" class="row"><label class="field" style="flex:1;margin:0">大約睡了幾小時？<input name="sleepHours" type="number" min="0" max="24" step="any" inputmode="decimal" value="${day.sleepHours ?? ''}" placeholder="例如 6.5；留空為未填"></label><button type="submit" class="small">保存</button></form></div></details>
   ${dreams.length ? `<section class="section-space"><div class="card-title"><h2>這一天留下的夢</h2><span class="micro">${dreams.length} 個</span></div>${dreams.map(d=>dreamItem(d)).join('')}</section>` : ''}
   ${sealCard()}<p class="footnote">只存在這部裝置 · 不解夢，也不催你打卡</p>
   ${backupDue ? '<div class="note row between"><span>記得偶爾把夢帶走備份。</span><button class="small" data-action="settings">匯出 JSON</button></div>' : ''}`;
@@ -90,6 +90,7 @@ function renderEditor() {
   <form id="dream-form"><div class="card">
   <div class="date-range"><label class="field">日期<input name="date" type="date" value="${editor.date}" required></label><label class="field">來自哪段睡眠？<select name="sleepType"><option value="night" ${editor.sleepType==='night'?'selected':''}>☾ 夜間睡眠</option><option value="nap" ${editor.sleepType==='nap'?'selected':''}>☀ 午覺</option></select></label></div>
   <p id="type-note" class="note" hidden>分類已變更。請確認上方日期；已輸入的內容都保留了。</p>
+  <div id="editor-sleep" ${editor.sleepType==='nap'?'hidden':''}><label class="field">這晚大約睡了幾小時？（可略過）<input name="nightSleepHours" data-sleep-date="${editor.date}" type="number" min="0" max="24" step="any" inputmode="decimal" value="${esc(editorSleepHours() ?? '')}" placeholder="例如 6.5" ${editor.sleepType==='nap'?'disabled':''}></label><p class="micro">同一晚的夢共用睡眠時數。沒有噩夢或不記得的晚上也可以在首頁補填，讓比較更完整。</p></div>
   ${scoreField('rarity','這次是甚麼等級？',RARITIES,RARITIES,'普通爛夢|傳奇級大作')}
   ${Object.entries(METRICS).map(([key,label])=>scoreField(key,label,[0,1,2,3,4,5],['0','1','2','3','4','5'],key==='sleepDisruption'?'沒影響|睡爛了':key==='distress'?'幾乎沒影響|非常難受':'溫和|非常極端')).join('')}
   </div><details class="card" id="details-panel" ${editor.description||editor.contentTags.length||editor.structures.length||editor.seriesId?'open':''}><summary>詳細記錄 <span class="micro">完全可略過</span></summary><div>
@@ -108,10 +109,22 @@ function readEditor() {
   const values = new FormData(form);
   for (const key of ['date','sleepType','description']) editor[key] = String(values.get(key));
   for (const key of ['seriesId','dreamMemory','predictedEvent','changedOutcome','lucid']) editor[key] = values.get(key) || null;
+  const hours = form.elements.namedItem('nightSleepHours');
+  if (editor.sleepType === 'night' && hours.validity.valid && validDate(hours.dataset.sleepDate)) {
+    editor.sleepHoursByDate ||= {};
+    editor.sleepHoursByDate[hours.dataset.sleepDate] = hours.value === '' ? null : Number(hours.value);
+  }
+}
+function editorSleepHours() { return editor.sleepHoursByDate && Object.hasOwn(editor.sleepHoursByDate,editor.date) ? editor.sleepHoursByDate[editor.date] : dayRecord(data,editor.date).sleepHours; }
+function updateEditorSleepField() {
+  const input = $('#dream-form [name="nightSleepHours"]');
+  $('#editor-sleep').hidden = editor.sleepType === 'nap'; input.disabled = editor.sleepType === 'nap';
+  input.dataset.sleepDate = editor.date; input.value = editorSleepHours() ?? '';
 }
 function persistDraft() {
   clearTimeout(draftTimer); if (!editor) return true; readEditor();
   if (!validDate(editor.date)) { $('#draft-status').textContent='請填有效日期；輸入仍在畫面上。'; return false; }
+  if (editor.sleepType === 'night' && !$('#dream-form [name="nightSleepHours"]').validity.valid) { $('#draft-status').textContent='睡眠時數請填 0–24，或留空。輸入仍保留。'; return false; }
   const draft = structuredClone(editor);
   const ok = commit(next => { next.drafts.editor = draft; }, { changed:false });
   if ($('#draft-status')) $('#draft-status').textContent = ok ? '草稿已存在這部裝置 · 正式保存後才計入統計' : '草稿尚未保存 · 請保留此頁並匯出備份';
@@ -146,15 +159,21 @@ function metricsHTML(s) {
   return `<div class="metric-grid">${[...Object.entries(METRICS),['rarity','平均稀有度']].map(([key,label])=>`<div class="metric"><span>${label}</span><strong>${score(s.metrics[key].value)}<small>${key==='rarity'?'N=1 · SSSR=5':'滿分 5'}</small></strong><small>${s.metrics[key].count} ${statsType==='night'?'晚':'個夢'}有評分</small></div>`).join('')}</div>`;
 }
 function categoryBars(items) { return items.length ? items.map(item=>`<div class="bar-row"><span>${esc(item.label)}</span><div class="bar"><span style="width:${item.ratio*100}%"></span></div><span>${item.count} · ${percent(item.ratio)}</span></div>`).join('') : '<p class="micro">還沒有填寫這類資料。</p>'; }
+function renderSleepAnalysis() {
+  const s = sleepAnalysis(data,statsStart,statsEnd);
+  return `<section class="card"><p class="eyebrow">SLEEP & NIGHTMARES</p><h2>睡多久，夢有甚麼不同？</h2><p class="micro">固定分析夜間睡眠，不受夜間／午覺篩選影響。${s.count} 晚有時數與狀態，${s.missingHours} 晚未填時數而排除。</p>
+  ${s.count?`<div class="metric-grid"><div class="metric"><span>平均睡眠</span><strong>${score(s.meanHours)}</strong><small>小時 · ${s.count} 晚</small></div><div class="metric"><span>有時數記錄的夜間噩夢率</span><strong>${percent(s.rate)}</strong><small>${s.yes} / ${s.known} 晚確定有／無</small></div></div><h3>三種晚上，平均睡多久？</h3>${s.byStatus.map(group=>`<div class="row between micro"><span>${STATUS[group.status]}</span><span>${score(group.meanHours)} 小時 · ${group.count} 晚</span></div>`).join('')}<details><summary>依睡眠時數比較</summary><div>${s.groups.map(group=>`<div class="series-item"><div class="row between"><strong>${group.label}</strong><span class="badge">${group.count} 晚</span></div>${group.count?`<div class="bar-row"><span>噩夢率</span><div class="bar"><span style="width:${(group.rate??0)*100}%"></span></div><span>${percent(group.rate)}</span></div><p class="micro">${group.yes} 晚有 ÷ ${group.known} 晚確定有／無<br>不記得 ${group.unknown}/${group.count} 晚（${percent(group.recallUnknownRate)}）</p><div class="dream-scores">${Object.entries({...METRICS,rarity:'稀有度 N=1–SSSR=5'}).map(([key,label])=>`<span>${label} ${score(group.metrics[key].value)}（${group.metrics[key].count} 晚）</span>`).join('')}</div>${group.known<5?'<p class="micro section-space">確定有／無的樣本少於 5 晚，先累積記錄，暫不解讀差異。</p>':''}`:'<p class="micro">尚無這段時數的記錄。</p>'}</div>`).join('')}</div></details>`:empty('填下幾晚睡眠時數後，就能在這裡比較。','☾')}
+  <p class="note">這是已填時數晚上的描述性比較，可能受漏記等因素影響。關聯不等於因果，不能據此說睡得短「造成」噩夢。每晚只計一次；未填評分不當作零。</p></section>`;
+}
 function renderStats() {
   if (!rangeValid(statsStart,statsEnd)) return `${header('LET THE RECORDS SPEAK','慢慢觀察')}<div class="note error">請選擇有效日期範圍，開始日不能晚於結束日，最長十年。</div>${statsRange()}`;
   const s=statistics(data,statsStart,statsEnd,statsType);
   const points=trend(data,statsStart,statsEnd,statsType,rolling);
-  const metric = statsType==='night'?trendMetric:(trendMetric==='rate'?'dreams':trendMetric);
-  const labels={rate:'夜間噩夢率',dreams:`過去 ${rolling} 天的夢境數`,...METRICS};
+  const metric = statsType==='night'?(trendMetric==='dreams'?'rate':trendMetric):(['rate','sleepHours'].includes(trendMetric)?'dreams':trendMetric);
+  const labels={rate:'夜間噩夢率',dreams:`過去 ${rolling} 天的夢境數`,...METRICS,...(statsType==='night'?{sleepHours:'夜間睡眠時數（小時）'}:{})};
   return `${header('SMALL TRACES, OVER TIME','慢慢觀察')}<p class="intro">不用靠記憶猜。先留下來，再慢慢看。</p>${statsRange()}
   <section class="card"><p class="eyebrow">夜間睡眠 · ${statsStart} — ${statsEnd}</p><h2>有多少晚做了噩夢？</h2><p class="large-stat">${percent(s.rate)}<small>夜間噩夢率</small></p><p class="micro">${s.yes} 晚有噩夢 ÷ ${s.yes+s.no} 晚確定有／無 · 已記錄 ${s.recorded} 晚</p><div class="row micro"><span>😴 無 ${s.no}</span><span>❓ 不記得 ${s.unknown}</span><span>— 未記錄 ${s.missing}</span></div><p class="note">不記得與未記錄不進分母。午覺夢不影響夜間噩夢率。</p></section>
-  <div class="segments" aria-label="夢境分析分類">${[['night','☾ 夜間'],['nap','☀ 午覺'],['all','全部']].map(([type,label])=>`<button data-action="stats-type" data-type="${type}" class="${statsType===type?'selected':''}">${label}</button>`).join('')}</div>
+  ${renderSleepAnalysis()}<div class="segments" aria-label="夢境分析分類">${[['night','☾ 夜間'],['nap','☀ 午覺'],['all','全部']].map(([type,label])=>`<button data-action="stats-type" data-type="${type}" class="${statsType===type?'selected':''}">${label}</button>`).join('')}</div>
   <p class="micro">${statsType==='night'?`按晚計算 · ${s.units} 晚有噩夢 · ${s.dreams} 個夢境細節`:`按每個夢計算 · ${s.dreams} 個夢${statsType==='nap'?'；未收集所有午睡，因此不計午覺噩夢率':''}`}</p>
   <section class="card"><h2>感受不必同步</h2>${metricsHTML(s)}${!s.dreams?'<p class="micro">尚無足夠資料。只記狀態也可以，評分之後再補。</p>':''}</section>
   <section class="card"><h2>看看變化</h2><div class="chart-controls"><label class="sr-only" for="trend-metric">趨勢指標</label><select id="trend-metric">${Object.entries(labels).filter(([k])=>statsType==='night'?k!=='dreams':k!=='rate').map(([k,label])=>`<option value="${k}" ${metric===k?'selected':''}>${label}</option>`).join('')}</select><label class="sr-only" for="rolling">移動窗口</label><select id="rolling"><option value="7" ${rolling===7?'selected':''}>7 天${metric==='dreams'?'合計':'平均'}</option><option value="30" ${rolling===30?'selected':''}>30 天${metric==='dreams'?'合計':'平均'}</option></select></div>${chart(points,metric,labels[metric])}<p class="micro">${metric==='dreams'?'每個日期顯示過去窗口內記錄的夢境數。':'每個日期顯示截至該日的移動平均；缺資料留空，不算零。'} 點選圓點可查看數值。</p></section>
@@ -166,7 +185,7 @@ function renderStats() {
 function statsRange() { return `<div class="segments">${[7,30,90].map(n=>`<button data-action="stats-range" data-days="${n}" class="${statsDays===n?'selected':''}">${n} 天</button>`).join('')}<button data-action="stats-range" data-days="0" class="${statsDays===0?'selected':''}">自訂</button></div><div class="date-range"><label class="field">開始日期<input id="stats-start" type="date" value="${statsStart}"></label><label class="field">結束日期<input id="stats-end" type="date" value="${statsEnd}"></label></div>`; }
 function chart(points,metric,title) {
   const width=520,height=190,pad=32, values=points.map(p=>p[metric]);
-  const filled=values.filter(v=>v!==null),max=metric==='rate'?1:metric==='dreams'?Math.max(1,...filled):5;
+  const filled=values.filter(v=>v!==null),max=metric==='rate'?1:metric==='dreams'?Math.max(1,...filled):metric==='sleepHours'?Math.max(10,Math.ceil(Math.max(0,...filled))):5;
   if (!filled.length) return empty('尚無足夠資料。缺填不當作零。','⌁');
   const xy=(v,i)=>[pad+(points.length===1?(width-2*pad)/2:i/(points.length-1)*(width-2*pad)),height-pad-v/max*(height-2*pad)];
   let path='',lastMissing=true;
@@ -326,8 +345,9 @@ document.addEventListener('click', async event => {
 document.addEventListener('submit',event=>{
   if(event.target.id==='dream-form'){
     event.preventDefault();clearTimeout(draftTimer);readEditor();if(!validDate(editor.date)){toast('請選擇有效日期。',true);return;}
-    const dream=structuredClone(editor);
-    if(commit(next=>{saveDream(next,dream);delete next.drafts.editor;})){const date=dream.date;editor=null;homeDate=date;selectedDate=date;month=date.slice(0,7);const page=editorReturn;go(page);render();window.scrollTo(0,0);toast('💀 → 🦭 NOM。這個夢已經留下來了。');$('.seal-emoji')?.classList.add('feed-pulse');}return;
+    const {sleepHoursByDate,...dream}=structuredClone(editor);
+    const hours = dream.sleepType==='night' ? editorSleepHours() : undefined;
+    if(commit(next=>{saveDream(next,dream,hours);delete next.drafts.editor;})){const date=dream.date;editor=null;homeDate=date;selectedDate=date;month=date.slice(0,7);const page=editorReturn;go(page);render();window.scrollTo(0,0);toast('💀 → 🦭 NOM。這個夢已經留下來了。');$('.seal-emoji')?.classList.add('feed-pulse');}return;
   }
   if(event.target.id==='hours-form'){
     event.preventDefault();const raw=new FormData(event.target).get('sleepHours'),value=raw===''?null:Number(raw);
@@ -348,7 +368,7 @@ document.addEventListener('input',event=>{
 document.addEventListener('change',event=>{
   const el=event.target;
   if(el.id==='home-date'){if(validDate(el.value)){homeDate=el.value;homeDateFollowsToday=false;render();}return;}
-  if(el.name==='sleepType'&&editor){readEditor();$('#type-note').hidden=false;scheduleDraft();return;}
+  if((el.name==='sleepType'||el.name==='date')&&editor){readEditor();updateEditorSleepField();if(el.name==='sleepType')$('#type-note').hidden=false;scheduleDraft();return;}
   if(el.name==='seriesId'&&editor){readEditor();const s=data.series.find(s=>s.id===editor.seriesId);$('#series-background').innerHTML=s?`<p class="note">${esc(s.background||'還沒有背景。')}</p>`:'';scheduleDraft();return;}
   if(el.id==='stats-start'||el.id==='stats-end'){statsDays=0;if(el.id==='stats-start')statsStart=el.value;else statsEnd=el.value;render();return;}
   if(el.id==='rolling'){rolling=Number(el.value);render();return;}
