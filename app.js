@@ -1,4 +1,4 @@
-import { RARITIES, STATUS, METRICS, DEFAULT_TAGS, groupContentTags, uid, dateKey, shiftDate, dayRecord, upsertDay, setNightStatus, saveDream, rewards, saveFeedback, statistics, trend, validateData, mergeData, csv, validDate, sleepAnalysis } from './core.js';
+import { RARITIES, STATUS, METRICS, DEFAULT_TAGS, groupContentTags, uid, dateKey, shiftDate, daysInclusive, dayRecord, upsertDay, setNightStatus, saveDream, rewards, saveFeedback, statistics, nightSummary, limitNotes, trendSeries, TREND_METRICS, ANALYSIS, comparePeriods, previousRange, validateData, mergeData, csv, validDate, sleepAnalysis } from './core.js';
 import { readData, writeData, recoverableImport, KEY, RECOVERY_KEY } from './storage.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -17,7 +17,8 @@ let homeDate = yesterday(), selectedDate = homeDate, month = selectedDate.slice(
 let observedToday = localToday(), homeDateFollowsToday = true;
 let editor = null, editorReturn = 'home', draftTimer, toastTimer, undoAction = null, stagedImport = null;
 let statsStart = shiftDate(localToday(), -29), statsEnd = localToday(), statsType = 'night', statsDays = 30, rolling = 7, trendMetric = 'rate';
-let compareA = { start:shiftDate(localToday(),-59), end:shiftDate(localToday(),-30) }, compareB = { start:statsStart, end:statsEnd };
+let compareCustom = null, chartView = null;
+const openSections = new Set();
 let conflict = false, swStatus = '正在準備離線功能';
 
 function toast(message, error = false, undo = null) {
@@ -188,48 +189,155 @@ function renderSeries(s) {
   return `<article class="series-item"><div class="row between"><h2 style="margin:0">${esc(s.name)}</h2><span class="badge">${esc(s.status)}</span></div><p>${esc(s.background||'還沒有背景記錄。')}</p><p class="micro">${dreams.length} 個 episode ${dreams.length?`· ${dreams[0].date} → ${dreams.at(-1).date}`:''}</p><div class="row"><button class="small primary" data-action="series-episode" data-id="${esc(s.id)}">＋Episode</button><button class="small" data-action="series-view" data-id="${esc(s.id)}">查看</button><button class="small" data-action="edit-series" data-id="${esc(s.id)}">編輯</button></div></article>`;
 }
 function rangeValid(start,end) { return validDate(start)&&validDate(end)&&start<=end&&Number(new Date(`${end}T12:00:00`))-Number(new Date(`${start}T12:00:00`)) <= 3660*864e5; }
-function metricsHTML(s) {
-  return `<div class="metric-grid">${[...Object.entries(METRICS),['rarity','平均稀有度']].map(([key,label])=>`<div class="metric"><span>${label}</span><strong>${score(s.metrics[key].value)}<small>${key==='rarity'?'N=1 · SSSR=5':'滿分 5'}</small></strong><small>${s.metrics[key].count} ${statsType==='night'?'晚':'個夢'}有評分</small></div>`).join('')}</div>`;
+const unitWord = unit => unit === 'night' ? '晚' : '個夢';
+const shortDate = value => value.slice(5).replace('-', '/');
+const kindLabel = { ratio: '比率', count: '滾動計數', mean: '平均值' };
+const signed = (value, digits = 1) => `${value > 0 ? '+' : value < 0 ? '−' : '±'}${Math.abs(value).toFixed(digits)}`;
+const keepOpen = id => openSections.has(id) ? 'open' : '';
+// A rate from very few nights is shown as a plain fraction so that it does not look like a finding.
+const rateText = (rate, yes, known) => known >= ANALYSIS.minGroupKnown ? percent(rate) : known ? `${yes} / ${known} 晚` : '—';
+const scopeNotes = {
+  night: '以「夜」為單位：只看有噩夢的夜晚，同一晚的多個夢合併計算。',
+  nap: '以「夢」為單位：每個午覺夢算一次。沒有記錄所有午睡，所以不計午覺噩夢率。',
+  all: '以「夢」為單位：夜間與午覺的夢各算一次。單位和「夜間」不同，數字不能直接互相比較。'
+};
+function scopeControl(withNote = true) {
+  return `<div class="segments" role="group" aria-label="統計的夢境範圍">${[['night','☾ 夜間'],['nap','☀ 午覺'],['all','全部']].map(([type,label])=>`<button data-action="stats-type" data-type="${type}" aria-pressed="${statsType===type}" class="${statsType===type?'selected':''}">${label}</button>`).join('')}</div>${withNote ? `<p class="micro">${scopeNotes[statsType]}</p>` : ''}`;
 }
-function categoryBars(items) { return items.length ? items.map(item=>`<div class="bar-row"><span>${esc(item.label)}</span><div class="bar"><span style="width:${item.ratio*100}%"></span></div><span>${item.count} · ${percent(item.ratio)}</span></div>`).join('') : '<p class="micro">還沒有填寫這類資料。</p>'; }
-function renderSleepAnalysis() {
-  const s = sleepAnalysis(data,statsStart,statsEnd);
-  return `<section class="card"><p class="eyebrow">SLEEP & NIGHTMARES</p><h2>睡多久，夢有甚麼不同？</h2><p class="micro">固定分析夜間睡眠，不受夜間／午覺篩選影響。${s.count} 晚有時數與狀態，${s.missingHours} 晚未填時數而排除。</p>
-  ${s.count?`<div class="metric-grid"><div class="metric"><span>平均睡眠</span><strong>${score(s.meanHours)}</strong><small>小時 · ${s.count} 晚</small></div><div class="metric"><span>有時數記錄的夜間噩夢率</span><strong>${percent(s.rate)}</strong><small>${s.yes} / ${s.known} 晚確定有／無</small></div></div><h3>三種晚上，平均睡多久？</h3>${s.byStatus.map(group=>`<div class="row between micro"><span>${STATUS[group.status]}</span><span>${score(group.meanHours)} 小時 · ${group.count} 晚</span></div>`).join('')}<details><summary>依睡眠時數比較</summary><div>${s.groups.map(group=>`<div class="series-item"><div class="row between"><strong>${group.label}</strong><span class="badge">${group.count} 晚</span></div>${group.count?`<div class="bar-row"><span>噩夢率</span><div class="bar"><span style="width:${(group.rate??0)*100}%"></span></div><span>${percent(group.rate)}</span></div><p class="micro">${group.yes} 晚有 ÷ ${group.known} 晚確定有／無<br>不記得 ${group.unknown}/${group.count} 晚（${percent(group.recallUnknownRate)}）</p><div class="dream-scores">${Object.entries({...METRICS,rarity:'稀有度 N=1–SSSR=5'}).map(([key,label])=>`<span>${label} ${score(group.metrics[key].value)}（${group.metrics[key].count} 晚）</span>`).join('')}</div>${group.known<5?'<p class="micro section-space">確定有／無的樣本少於 5 晚，先累積記錄，暫不解讀差異。</p>':''}`:'<p class="micro">尚無這段時數的記錄。</p>'}</div>`).join('')}</div></details>`:empty('填下幾晚睡眠時數後，就能在這裡比較。','☾')}
-  <p class="note">這是已填時數晚上的描述性比較，可能受漏記等因素影響。關聯不等於因果，不能據此說睡得短「造成」噩夢。每晚只計一次；未填評分不當作零。</p></section>`;
+function metricsHTML(s) {
+  const word = unitWord(s.unit);
+  return `<div class="metric-grid">${Object.entries(METRICS).map(([key,label])=>{ const m=s.metrics[key]; return `<div class="metric"><span>${label}</span><strong>${score(m.value)}${m.value===null?'':'<small>/ 5</small>'}</strong><small>${m.count} ${word}有評分${m.missing?` · ${m.missing} ${word}沒評`:''}</small></div>`; }).join('')}</div>`;
+}
+function categoryBars(items, limit = items.length) {
+  return items.length ? items.slice(0, limit).map(item=>`<div class="bar-row"><span>${esc(item.label)}</span><div class="bar"><span style="width:${(item.ratio ?? 0)*100}%"></span></div><span>${item.count} · ${percent(item.ratio)}</span></div>`).join('') : '<p class="micro">還沒有填寫這類資料。</p>';
+}
+function renderSleepImpact(s) {
+  const sl = sleepAnalysis(data, statsStart, statsEnd, { today: localToday() });
+  const excluded = sl.missingHours + sl.hoursOnly;
+  const groupHTML = group => `<div class="series-item"><div class="row between"><strong>${group.label}</strong><span class="badge">${group.count} 晚</span></div>${group.count ? `<p class="micro">確定有／無 ${group.known} 晚（有 ${group.yes}、無 ${group.no}）· 不記得 ${group.unknown} 晚</p>${group.reliable ? `<div class="bar-row"><span>噩夢率</span><div class="bar"><span style="width:${(group.rate ?? 0) * 100}%"></span></div><span>${percent(group.rate)}</span></div><p class="micro">${group.yes} ÷ ${group.known} 晚確定有／無</p>` : `<p class="micro">確定有／無少於 ${ANALYSIS.minGroupKnown} 晚，只列出晚數，不顯示百分比。</p>`}<div class="dream-scores">${Object.entries(METRICS).map(([key, label]) => { const m = group.metrics[key]; return `<span>${label} ${m.count ? score(m.value) : '—'}（${m.count} / ${m.units} 晚有評分）</span>`; }).join('')}</div>` : '<p class="micro">尚無這段時數的記錄。</p>'}</div>`;
+  return `<section class="card stats-section" id="stats-sleep"><p class="eyebrow">D · 睡眠與影響</p><h2>睡多久，夢有甚麼不同？</h2>
+  <p class="micro">只看夜間睡眠。納入 <strong>${sl.count}</strong> 晚（有夜間狀態、也有睡眠時數）；排除 <strong>${excluded}</strong> 晚：${sl.missingHours} 晚有狀態但沒填時數${sl.hoursOnly ? `、${sl.hoursOnly} 晚只有時數沒有狀態` : ''}。</p>
+  ${sl.count ? `<div class="metric-grid"><div class="metric"><span>平均睡眠</span><strong>${score(sl.meanHours)}</strong><small>小時 · ${sl.count} 晚</small></div><div class="metric"><span>這 ${sl.count} 晚的噩夢率</span><strong>${rateText(sl.rate, sl.yes, sl.known)}</strong><small>${sl.yes} / ${sl.known} 晚確定有／無 · 不記得 ${sl.unknown} 晚</small></div></div><h3>三種夜晚的平均睡眠</h3>${sl.byStatus.map(group => `<div class="row between micro"><span>${STATUS[group.status]}</span><span>${group.count ? `${score(group.meanHours)} 小時 · ${group.count} 晚` : '沒有資料'}</span></div>`).join('')}<details data-keep="sleep-groups" ${keepOpen('sleep-groups')}><summary>依睡眠時數分組</summary><div>${sl.groups.map(groupHTML).join('')}</div></details>` : empty('填下幾晚睡眠時數後，就能在這裡比較。', '☾')}
+  <p class="note">這只是描述各組的數字，不能說明睡多久「造成」或「避免」噩夢；漏記和其他因素都可能影響。</p>
+  <div class="divider"></div><h3>感受評分</h3>${scopeControl(false)}${metricsHTML(s)}${s.units ? '' : '<p class="micro">這個範圍內還沒有夢。只記狀態也可以，評分之後再補。</p>'}
+  <p class="micro">評分選填，沒填的不算 0。稀有度是主觀趣味，和感受評分分開看，不互相推斷。</p></section>`;
+}
+function renderOverview(n) {
+  const notes = limitNotes(n), due = n.recorded + n.missing;
+  const seg = (count, cls, label) => count ? `<span class="seg ${cls}" style="flex:${count}" title="${label} ${count} 晚"></span>` : '';
+  const side = [n.pending ? '今天的夜晚還沒結束，不算未記錄。' : '', n.future ? `${n.future} 個今天之後的日期不計入。` : '', n.ahead ? `另有 ${n.ahead} 筆日期在今天之後的記錄，沒有納入統計。` : ''].filter(Boolean).join('');
+  return `<section class="card stats-section" id="stats-overview"><p class="eyebrow">A · 概覽 · ${statsStart} — ${n.days ? n.end : statsEnd}</p><h2>夜間噩夢發生率</h2>
+  ${n.days ? `<div class="rate-hero">${n.known ? `<span class="rate-num${n.known < ANALYSIS.minGroupKnown ? ' muted' : ''}">${percent(n.rate)}</span><span class="rate-frac"><strong>${n.yes}</strong> / ${n.known} 晚</span>` : '<span class="rate-num muted">—</span><span class="rate-frac">還算不出來</span>'}</div>` : '<p class="micro">這個範圍都在今天之後，還沒有可以統計的夜晚。</p>'}
+  <p class="micro">有噩夢的夜晚 ÷ 確定有／無的夜晚。不記得、未記錄不進分母，也不當作沒有噩夢。</p>
+  ${notes.length ? notes.map(note => `<div class="note warning limit"><span aria-hidden="true">☾</span><span>${esc(note.text)}</span></div>`).join('') : n.days ? '<p class="micro">目前沒有特別的資料限制提示。</p>' : ''}
+  ${due ? `<div class="coverage-bar" role="img" aria-label="${n.yes} 晚有噩夢、${n.no} 晚沒有、${n.unknown} 晚不記得、${n.missing} 晚未記錄">${seg(n.yes, 'yes', '有噩夢')}${seg(n.no, 'no', '沒有噩夢')}${seg(n.unknown, 'unknown', '不記得')}${seg(n.missing, 'missing', '未記錄')}</div>` : ''}
+  <ul class="state-list"><li><span><i class="dot yes"></i>💀 有噩夢</span><strong>${n.yes} 晚</strong></li><li><span><i class="dot no"></i>😴 沒有噩夢</span><strong>${n.no} 晚</strong></li><li><span><i class="dot unknown"></i>❓ 不記得</span><strong>${n.unknown} 晚</strong></li><li><span><i class="dot missing"></i>— 未記錄</span><strong>${n.missing} 晚</strong></li></ul>
+  <p class="micro">${due ? `已經過去的 ${due} 晚中，有 ${n.recorded} 晚留下記錄（${percent(n.coverage)}）。` : ''}「不記得」是你記下的答案；「未記錄」是沒有留下任何記錄。${side ? ` ${side}` : ''}</p></section>`;
+}
+function trendValueText(series, p) {
+  if (series.kind === 'ratio') return percent(p.value);
+  if (series.metric === 'sleepHours') return `${score(p.value)} 小時`;
+  return series.kind === 'count' ? String(p.value) : score(p.value);
+}
+function readoutText(series, p) {
+  return `${p.date} · ${series.label} ${trendValueText(series, p)}（${p.sample} ${series.sampleLabel}${series.kind === 'ratio' ? `，其中 ${Math.round(p.value * p.sample)} 晚有噩夢` : ''}）`;
+}
+function renderTrend() {
+  if (!TREND_METRICS[trendMetric]) trendMetric = 'rate';
+  const series = trendSeries(data, statsStart, statsEnd, trendMetric, rolling, { today: localToday() });
+  chartView = series;
+  const good = series.points.filter(p => p.reliable), sizes = good.map(p => p.sample);
+  const facts = [good.length ? `畫出 ${series.plotted} 個樣本足夠的窗口（每個至少 ${series.min} ${series.sampleLabel}；樣本 ${Math.min(...sizes)}–${Math.max(...sizes)}）` : '', series.insufficient ? `${series.insufficient} 個窗口樣本不足，沒有畫出，也沒有當作 0` : '', series.unavailable ? `${series.unavailable} 個窗口完全沒有資料` : ''].filter(Boolean);
+  const last = good.at(-1);
+  return `<section class="card stats-section" id="stats-trend"><p class="eyebrow">B · 趨勢</p><h2>${esc(series.label)}</h2>
+  <label class="sr-only" for="trend-metric">趨勢指標</label><select id="trend-metric">${Object.entries(TREND_METRICS).map(([key, m]) => `<option value="${key}" ${key === trendMetric ? 'selected' : ''}>${esc(m.label)}（${kindLabel[m.kind]}）</option>`).join('')}</select>
+  <div class="segments" role="group" aria-label="滾動窗口">${[7, 30].map(n => `<button data-action="trend-window" data-days="${n}" aria-pressed="${rolling === n}" class="${rolling === n ? 'selected' : ''}">過去 ${n} 天</button>`).join('')}</div>
+  <p class="micro kind-line"><strong>${kindLabel[series.kind]}</strong> · 每個點 = 當天與前 ${rolling - 1} 天 · ${esc(series.basis)}</p>
+  ${chartHTML(series)}${last ? `<p class="chart-readout" id="chart-readout" aria-live="polite">${esc(readoutText(series, last))}</p>` : ''}
+  <p class="micro">空白＝資料不足或沒有資料，不是 0。只呈現數字，不解讀變化。</p>
+  <details data-keep="trend-how" ${keepOpen('trend-how')}><summary>怎麼讀這張圖</summary><div>${facts.map(fact => `<p class="micro">${fact}。</p>`).join('')}<p class="micro">實心點＝樣本足夠的窗口；下方細條是各窗口的樣本數，灰色代表不足，不畫在線上。點圖表或用左右方向鍵可逐點查看。</p></div></details>
+  ${good.length ? `<details data-keep="trend-table" ${keepOpen('trend-table')}><summary>用表格看數值</summary><div><table class="mini-table"><thead><tr><th>日期</th><th>${esc(series.label)}</th><th>樣本</th></tr></thead><tbody>${good.slice(-40).reverse().map(p => `<tr><td>${p.date}</td><td>${trendValueText(series, p)}</td><td>${p.sample} ${series.sampleLabel}</td></tr>`).join('')}</tbody></table>${good.length > 40 ? '<p class="micro">只列出最近 40 個有效窗口。</p>' : ''}</div></details>` : ''}</section>`;
+}
+function renderPatterns(s) {
+  const word = unitWord(s.unit), tags = s.categories.contentTags, meta = s.categoryMeta.contentTags, structMeta = s.categoryMeta.structures, r = s.rarity;
+  const inScope = d => d.date >= statsStart && d.date <= s.end && (statsType === 'all' || d.sleepType === statsType);
+  const seriesRows = data.series.map(series => [series, data.dreams.filter(d => d.seriesId === series.id && inScope(d)).length]).filter(([, count]) => count);
+  return `<section class="card stats-section" id="stats-patterns"><p class="eyebrow">C · 夢境模式</p><h2>常見的內容與重複</h2>${scopeControl()}
+  <h3>常見內容</h3>
+  ${meta.units ? `<p class="micro">${meta.filled} / ${meta.units} ${word}有填內容標籤${meta.unfilled ? `（${meta.unfilled} ${word}沒填，不計入百分比）` : ''}；同一${word}重複的標籤只算一次。</p>` : '<p class="micro">這個範圍內還沒有夢。</p>'}
+  ${categoryBars(tags, 5)}${tags.length > 5 ? `<p class="micro">另有 ${tags.length - 5} 個標籤，完整清單在「進階分析」。</p>` : ''}
+  <div class="divider"></div><h3>重複出現與系列</h3>
+  <div class="stat-row"><span>屬於夢境系列</span><strong>${s.inSeries} / ${s.units} ${word}</strong></div>
+  <div class="stat-row"><span>標記為重複出現</span><strong>${s.recurring} / ${structMeta.filled} ${word}</strong></div>
+  <p class="micro">系列是你整理的故事線；重複出現是你在「夢的結構」選的「輪迴 / Recurring」。兩者分開統計。重複出現只以有填「夢的結構」的 ${structMeta.filled} ${word}為分母${structMeta.unfilled ? `（另有 ${structMeta.unfilled} ${word}沒填）` : ''}。</p>
+  ${seriesRows.map(([series, count]) => `<p class="micro">↻ ${esc(series.name)} · ${count} 個 episode（每個 episode 是一個夢）</p>`).join('')}
+  <details data-keep="rarity" ${keepOpen('rarity')}><summary>稀有度分布 <span class="micro">主觀趣味等級</span></summary><div>
+  <p class="micro">稀有度是你主觀的趣味等級，不代表可怕或影響程度。以「個夢」為單位，百分比只計有評級的夢。</p>
+  ${r.rated ? r.items.map(item => `<div class="bar-row"><span>${item.label}</span><div class="bar"><span style="width:${(item.share ?? 0) * 100}%"></span></div><span>${item.count} · ${percent(item.share)}</span></div>`).join('') : '<p class="micro">還沒有評級的夢。</p>'}
+  <p class="micro">有評級 ${r.rated} 個 · 未評級 ${r.unrated} 個（不計入百分比）${r.rated ? ` · 中位數 ${r.median} · ${r.mode.length > 2 ? '沒有明顯最常見的等級' : `最常見 ${r.mode.join('、')}`}` : ''}${r.rated && r.rated < ANALYSIS.minRated ? '。評級的夢還很少，分布只供參考' : ''}。</p></div></details></section>`;
+}
+function renderAdvanced(s) {
+  const word = unitWord(s.unit), scopeName = { night: '夜間', nap: '午覺', all: '全部' }[statsType];
+  return `<details class="card stats-section" id="stats-advanced" data-keep="advanced" ${keepOpen('advanced')}><summary>E · 進階分析 <span class="micro">時段比較、完整分類</span></summary><div>
+  <h3>比較兩個時段</h3><div data-compare-root>${renderCompare()}</div>
+  <div class="divider"></div><h3>完整分類</h3><p class="micro">目前的統計範圍：${scopeName}（在「夢境模式」切換）。百分比以有填的${word}為分母，同一${word}多選可超過 100%。</p>
+  ${[['contentTags', '內容標籤'], ['structures', '夢的結構'], ['fearReasons', '你標記的可怕原因']].map(([key, title]) => { const meta = s.categoryMeta[key]; return `<h4>${title} <span class="micro">${meta.filled} / ${meta.units} ${word}有填</span></h4>${categoryBars(s.categories[key])}`; }).join('')}
+  <div class="divider"></div><h3>其他</h3><div class="stat-row"><span>夢中記起以前做過這個夢<small>你在編輯器選了「是」</small></span><strong>${s.recalled} / ${s.units} ${word}</strong></div></div></details>`;
 }
 function renderStats() {
   if (!rangeValid(statsStart,statsEnd)) return `${header('LET THE RECORDS SPEAK','慢慢觀察')}<div class="note error">請選擇有效日期範圍，開始日不能晚於結束日，最長十年。</div>${statsRange()}`;
-  const s=statistics(data,statsStart,statsEnd,statsType);
-  const points=trend(data,statsStart,statsEnd,statsType,rolling);
-  const metric = statsType==='night'?(trendMetric==='dreams'?'rate':trendMetric):(['rate','sleepHours'].includes(trendMetric)?'dreams':trendMetric);
-  const labels={rate:'夜間噩夢率',dreams:`過去 ${rolling} 天的夢境數`,...METRICS,...(statsType==='night'?{sleepHours:'夜間睡眠時數（小時）'}:{})};
+  const today = localToday(), s = statistics(data, statsStart, statsEnd, statsType, { today }), nights = nightSummary(data, statsStart, statsEnd, { today });
+  const sections = [['stats-overview', '概覽'], ['stats-trend', '趨勢'], ['stats-patterns', '夢境模式'], ['stats-sleep', '睡眠與影響'], ['stats-advanced', '進階']];
   return `${header('SMALL TRACES, OVER TIME','慢慢觀察')}<p class="intro">不用靠記憶猜。先留下來，再慢慢看。</p>${statsRange()}
-  <section class="card"><p class="eyebrow">夜間睡眠 · ${statsStart} — ${statsEnd}</p><h2>有多少晚做了噩夢？</h2><p class="large-stat">${percent(s.rate)}<small>夜間噩夢率</small></p><p class="micro">${s.yes} 晚有噩夢 ÷ ${s.yes+s.no} 晚確定有／無 · 已記錄 ${s.recorded} 晚</p><div class="row micro"><span>😴 無 ${s.no}</span><span>❓ 不記得 ${s.unknown}</span><span>— 未記錄 ${s.missing}</span></div><p class="note">不記得與未記錄不進分母。午覺夢不影響夜間噩夢率。</p></section>
-  ${renderSleepAnalysis()}<div class="segments" aria-label="夢境分析分類">${[['night','☾ 夜間'],['nap','☀ 午覺'],['all','全部']].map(([type,label])=>`<button data-action="stats-type" data-type="${type}" class="${statsType===type?'selected':''}">${label}</button>`).join('')}</div>
-  <p class="micro">${statsType==='night'?`按晚計算 · ${s.units} 晚有噩夢 · ${s.dreams} 個夢境細節`:`按每個夢計算 · ${s.dreams} 個夢${statsType==='nap'?'；未收集所有午睡，因此不計午覺噩夢率':''}`}</p>
-  <section class="card"><h2>感受不必同步</h2>${metricsHTML(s)}${!s.dreams?'<p class="micro">尚無足夠資料。只記狀態也可以，評分之後再補。</p>':''}</section>
-  <section class="card"><h2>看看變化</h2><div class="chart-controls"><label class="sr-only" for="trend-metric">趨勢指標</label><select id="trend-metric">${Object.entries(labels).filter(([k])=>statsType==='night'?k!=='dreams':k!=='rate').map(([k,label])=>`<option value="${k}" ${metric===k?'selected':''}>${label}</option>`).join('')}</select><label class="sr-only" for="rolling">移動窗口</label><select id="rolling"><option value="7" ${rolling===7?'selected':''}>7 天${metric==='dreams'?'合計':'平均'}</option><option value="30" ${rolling===30?'selected':''}>30 天${metric==='dreams'?'合計':'平均'}</option></select></div>${chart(points,metric,labels[metric])}<p class="micro">${metric==='dreams'?'每個日期顯示過去窗口內記錄的夢境數。':'每個日期顯示截至該日的移動平均；缺資料留空，不算零。'} 點選圓點可查看數值。</p></section>
-  <section class="card"><h2>稀有度分布</h2><p class="micro">按夢境數計算；未評級不列入。</p>${categoryBars(s.rarity.map(r=>({...r,ratio:s.dreams?r.count/s.dreams:0})))}</section>
-  <section class="card"><h2>再次進入熟悉的夢</h2><p class="large-stat">${s.units?percent(s.recurring/s.units):'—'}</p><p class="micro">${s.recurring} / ${s.units} ${statsType==='night'?'晚':'個夢'} · 有 recurring 結構或連結系列</p>${data.series.filter(series=>data.dreams.some(d=>d.seriesId===series.id&&d.date>=statsStart&&d.date<=statsEnd&&(statsType==='all'||d.sleepType===statsType))).map(series=>`<p class="micro">↻ ${esc(series.name)} · ${data.dreams.filter(d=>d.seriesId===series.id&&d.date>=statsStart&&d.date<=statsEnd&&(statsType==='all'||d.sleepType===statsType)).length} 個 episode</p>`).join('')}</section>
-  ${[['contentTags','常出現的內容'],['structures','夢的結構'],['fearReasons','按下了哪些恐懼按鈕？']].map(([key,title])=>`<section class="card"><h2>${title}</h2><p class="micro">分母：${s.units} ${statsType==='night'?'晚有噩夢':'個夢'}；多選合計可超過 100%。</p>${categoryBars(s.categories[key])}</section>`).join('')}
-  <details class="card"><summary>比較兩個時段</summary><div>${renderCompare()}</div></details><p class="footnote">記錄不替夢下結論，也不替你評分。</p>`;
+  <nav class="stats-nav" aria-label="分析區塊">${sections.map(([id, label]) => `<button data-action="stats-jump" data-target="${id}">${label}</button>`).join('')}</nav>
+  ${renderOverview(nights)}${renderTrend()}${renderPatterns(s)}${renderSleepImpact(s)}${renderAdvanced(s)}
+  <p class="footnote">記錄不替夢下結論，也不替你評分 · 🦭 海豹只負責吃</p>`;
 }
-function statsRange() { return `<div class="segments">${[7,30,90].map(n=>`<button data-action="stats-range" data-days="${n}" class="${statsDays===n?'selected':''}">${n} 天</button>`).join('')}<button data-action="stats-range" data-days="0" class="${statsDays===0?'selected':''}">自訂</button></div><div class="date-range"><label class="field">開始日期<input id="stats-start" type="date" value="${statsStart}"></label><label class="field">結束日期<input id="stats-end" type="date" value="${statsEnd}"></label></div>`; }
-function chart(points,metric,title) {
-  const width=520,height=190,pad=32, values=points.map(p=>p[metric]);
-  const filled=values.filter(v=>v!==null),max=metric==='rate'?1:metric==='dreams'?Math.max(1,...filled):metric==='sleepHours'?Math.max(10,Math.ceil(Math.max(0,...filled))):5;
-  if (!filled.length) return empty('尚無足夠資料。缺填不當作零。','⌁');
-  const xy=(v,i)=>[pad+(points.length===1?(width-2*pad)/2:i/(points.length-1)*(width-2*pad)),height-pad-v/max*(height-2*pad)];
-  let path='',lastMissing=true;
-  values.forEach((v,i)=>{if(v===null){lastMissing=true;return;}const [x,y]=xy(v,i);path+=`${lastMissing?'M':'L'}${x.toFixed(1)},${y.toFixed(1)} `;lastMissing=false;});
-  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(title)}走勢"><title>${esc(title)}走勢；${points[0].date} 至 ${points.at(-1).date}</title>${[0,.5,1].map(t=>`<line x1="${pad}" x2="${width-pad}" y1="${height-pad-t*(height-2*pad)}" y2="${height-pad-t*(height-2*pad)}"/><text x="0" y="${height-pad-t*(height-2*pad)+4}">${metric==='rate'?`${t*100}%`:score(t*max)}</text>`).join('')}<path d="${path}"/>${points.map((p,i)=>{if(p[metric]===null)return '';const [x,y]=xy(p[metric],i);return `<circle cx="${x}" cy="${y}" r="${points.length>100?2:3}" tabindex="0" role="button" aria-label="${p.date} ${esc(title)} ${metric==='rate'?percent(p[metric]):score(p[metric])}" data-action="chart-point" data-label="${esc(`${p.date} · ${title} ${metric==='rate'?percent(p[metric]):score(p[metric])}`)}"><title>${p.date} · ${metric==='rate'?percent(p[metric]):score(p[metric])}</title></circle>`;}).join('')}<text x="${pad}" y="${height-5}">${points[0].date}</text><text x="${width-pad}" y="${height-5}" text-anchor="end">${points.at(-1).date}</text></svg>`;
+function statsRange() {
+  return `<div class="segments" role="group" aria-label="統計範圍">${[7,30,90].map(n=>`<button data-action="stats-range" data-days="${n}" aria-pressed="${statsDays===n}" class="${statsDays===n?'selected':''}">${n} 天</button>`).join('')}<button data-action="stats-range" data-days="0" aria-pressed="${statsDays===0}" class="${statsDays===0?'selected':''}">自訂</button></div>${statsDays===0?`<div class="date-range"><label class="field">開始日期<input id="stats-start" type="date" value="${statsStart}"></label><label class="field">結束日期<input id="stats-end" type="date" value="${statsEnd}"></label></div>`:''}`;
+}
+const CHART = { W: 320, padL: 40, padR: 10, top: 12, plotH: 124, gap: 12, stripH: 24 };
+const chartX = (i, n) => CHART.padL + (n === 1 ? (CHART.W - CHART.padL - CHART.padR) / 2 : i / (n - 1) * (CHART.W - CHART.padL - CHART.padR));
+function chartGeom(series) {
+  const n = series.points.length, values = series.points.filter(p => p.reliable).map(p => p.value);
+  const max = series.kind === 'ratio' ? 1 : Object.hasOwn(METRICS, series.metric) ? 5 : Math.max(2, Math.ceil(Math.max(...values, 0) / 2) * 2);
+  return { n, max, x: i => chartX(i, n), y: v => CHART.top + CHART.plotH - v / max * CHART.plotH };
+}
+// Only windows with enough observations are drawn; the strip underneath shows each window's sample size.
+function chartHTML(series) {
+  const { W, padL, padR, top, plotH, gap, stripH } = CHART, pts = series.points, good = pts.filter(p => p.reliable);
+  if (!good.length) return `<div class="empty"><span aria-hidden="true">⌁</span>資料還不夠，暫時不畫趨勢。<br><small>需要在 ${series.windowDays} 天窗口內至少有 ${series.min} ${esc(series.sampleLabel)}。</small></div>`;
+  const g = chartGeom(series), n = g.n, stripTop = top + plotH + gap, H = stripTop + stripH + 22;
+  const tick = v => series.kind === 'ratio' ? `${Math.round(v * 100)}%` : Number.isInteger(v) ? String(v) : v.toFixed(1);
+  // Long ranges are thinned to about 120 evenly spaced windows (aligned to the last day); tapping still uses every window.
+  const stride = Math.max(1, Math.ceil(n / 120)), shown = pts.map((p, i) => i).filter(i => (n - 1 - i) % stride === 0);
+  let path = '', joined = false;
+  for (const i of shown) { const p = pts[i]; if (!p.reliable) { joined = false; continue; } path += `${joined ? 'L' : 'M'}${g.x(i).toFixed(1)},${g.y(p.value).toFixed(1)} `; joined = true; }
+  const lastIndex = pts.lastIndexOf(good.at(-1));
+  const dots = shown.map(i => pts[i].reliable ? `<circle cx="${g.x(i).toFixed(1)}" cy="${g.y(pts[i].value).toFixed(1)}" r="3.5"/>` : '').join('');
+  const maxSample = Math.max(1, ...pts.map(p => p.sample)), barWidth = Math.max(1, Math.min(6, (W - padL - padR) / shown.length * 0.6));
+  let okBars = '', lowBars = '';
+  for (const i of shown) { const p = pts[i]; if (!p.sample) continue; const bar = `M${g.x(i).toFixed(1)},${stripTop + stripH} v${(-Math.max(1.5, p.sample / maxSample * stripH)).toFixed(1)} `; if (p.reliable) okBars += bar; else lowBars += bar; }
+  const span = daysInclusive(pts[0].date, pts.at(-1).date), axisDate = value => span > 330 ? value.slice(0, 7).replace('-', '/') : shortDate(value);
+  const labels = (n === 1 ? [[0, 'middle']] : [[0, 'start'], ...(n >= 5 ? [[Math.floor((n - 1) / 2), 'middle']] : []), [n - 1, 'end']]).map(([i, anchor]) => `<text x="${anchor === 'end' ? W - padR : anchor === 'start' ? padL : g.x(i)}" y="${H - 6}" text-anchor="${anchor}">${axisDate(pts[i].date)}</text>`).join('');
+  series.cursor = lastIndex;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" tabindex="0" aria-label="${esc(series.label)}走勢；左右方向鍵可逐點查看；${pts[0].date} 至 ${pts.at(-1).date}"><title>${esc(series.label)}走勢</title>${[0, .5, 1].map(t => `<line x1="${padL}" x2="${W - padR}" y1="${g.y(t * g.max)}" y2="${g.y(t * g.max)}"/><text x="${padL - 6}" y="${g.y(t * g.max) + 4}" text-anchor="end">${tick(t * g.max)}</text>`).join('')}<path class="line" d="${path}"/>${dots}<path class="bars low" style="stroke-width:${barWidth}px" d="${lowBars}"/><path class="bars ok" style="stroke-width:${barWidth}px" d="${okBars}"/><text x="${padL - 6}" y="${stripTop + stripH - 2}" text-anchor="end">樣本</text>${labels}<line class="cursor" x1="${g.x(lastIndex)}" x2="${g.x(lastIndex)}" y1="${top}" y2="${stripTop + stripH}"/><circle class="cursor-dot" cx="${g.x(lastIndex)}" cy="${g.y(pts[lastIndex].value)}" r="5"/><rect class="chart-hit" data-action="chart-tap" x="${padL}" y="${top}" width="${W - padL - padR}" height="${plotH + gap + stripH}"/></svg>`;
+}
+function moveChartCursor(svg, index) {
+  const series = chartView, p = series.points[index], g = chartGeom(series);
+  series.cursor = index;
+  svg.querySelector('.cursor').setAttribute('x1', g.x(index)); svg.querySelector('.cursor').setAttribute('x2', g.x(index));
+  svg.querySelector('.cursor-dot').setAttribute('cx', g.x(index)); svg.querySelector('.cursor-dot').setAttribute('cy', g.y(p.value));
+  $('#chart-readout').textContent = readoutText(series, p);
 }
 function renderCompare() {
-  const valid=rangeValid(compareA.start,compareA.end)&&rangeValid(compareB.start,compareB.end);
-  const a=valid?statistics(data,compareA.start,compareA.end,statsType):null,b=valid?statistics(data,compareB.start,compareB.end,statsType):null;
-  const delta=(x,y,ratio=false)=>x===null||y===null?'資料不足':`${y-x>0?'+':''}${ratio?((y-x)*100).toFixed(1):(y-x).toFixed(1)}${ratio?' 個百分點':''}`;
-  return `<p class="micro">沿用上方的${statsType==='night'?'夜間':statsType==='nap'?'午覺':'全部夢境'}分析分類。夜間噩夢率始終只算夜間。</p>${[['a',compareA,a],['b',compareB,b]].map(([key,range,s])=>`<section class="series-item"><h3>時段 ${key.toUpperCase()}</h3><div class="date-range"><label class="field">開始<input type="date" data-compare="${key}" data-edge="start" value="${range.start}"></label><label class="field">結束<input type="date" data-compare="${key}" data-edge="end" value="${range.end}"></label></div>${s?`<p>夜間噩夢率 ${percent(s.rate)} <span class="micro">(${s.yes}/${s.yes+s.no} 晚)</span></p>${metricsHTML(s)}<p class="micro">輪迴 ${s.recurring}/${s.units} · ${s.dreams} 個夢境細節</p>${[['contentTags','內容'],['structures','結構'],['fearReasons','恐懼原因']].map(([field,label])=>`<details><summary>${label}</summary><div>${categoryBars(s.categories[field])}</div></details>`).join('')}`:'<p class="note warning">請選擇有效日期範圍，最長十年。</p>'}</section>`).join('')}${valid?`<div class="compare-delta"><strong>B 相對 A</strong><p>夜間噩夢率：${delta(a.rate,b.rate,true)}</p>${Object.entries({...METRICS,rarity:'平均稀有度'}).map(([key,label])=>`<p>${label}：${delta(a.metrics[key].value,b.metrics[key].value)}</p>`).join('')}<p>輪迴比例：${delta(a.units?a.recurring/a.units:null,b.units?b.recurring/b.units:null,true)}</p></div>`:''}`;
+  const ranges = compareCustom || { a: previousRange(statsStart, statsEnd), b: { start: statsStart, end: statsEnd } };
+  const valid = rangeValid(ranges.a.start, ranges.a.end) && rangeValid(ranges.b.start, ranges.b.end);
+  const cmp = valid ? comparePeriods(data, ranges.a, ranges.b, { today: localToday() }) : null;
+  const periodHTML = (key, range, s) => `<section class="series-item"><h4>時段 ${key.toUpperCase()}${key === 'a' ? '（較早）' : ''}</h4><div class="date-range"><label class="field">開始<input type="date" data-compare="${key}" data-edge="start" value="${range.start}"></label><label class="field">結束<input type="date" data-compare="${key}" data-edge="end" value="${range.end}"></label></div>${s ? `<p>夜間噩夢率 <strong>${rateText(s.rate, s.yes, s.known)}</strong> <span class="micro">${s.yes} / ${s.known} 晚確定有／無 · 記錄覆蓋 ${percent(s.coverage)}</span></p>${metricsHTML(s)}<p class="micro">屬於系列 ${s.inSeries} / ${s.units} 晚 · 標記重複出現 ${s.recurring} / ${s.categoryMeta.structures.filled} 晚</p>` : ''}</section>`;
+  return `<p class="micro">比較只看夜間睡眠，單位是「夜」，不受上方範圍影響。${compareCustom ? '' : '預設 A＝上一段（和目前範圍一樣長），B＝目前範圍。'}</p>${periodHTML('a', ranges.a, cmp?.a)}${periodHTML('b', ranges.b, cmp?.b)}${valid ? '' : '<p class="note warning">請選擇有效日期範圍（開始日不能晚於結束日，最長十年）。</p>'}
+  ${valid ? `<div class="compare-delta"><strong>B 相對 A · 只是描述，不是評價</strong>${cmp.lengthsDiffer ? '<p>兩個時段長度不同，比較時請留意。</p>' : ''}${cmp.enough ? `<p>夜間噩夢率：${signed(cmp.rateDelta * 100, 0)} 個百分點（A ${percent(cmp.a.rate)} → B ${percent(cmp.b.rate)}）</p>` : `<p>任一時段確定有／無少於 ${ANALYSIS.minCompareKnown} 晚，暫不計算差異。</p>`}${Object.entries(METRICS).map(([key, label]) => `<p>${label}：${cmp.metricDeltas[key] === null ? `資料不足（每段至少要 ${ANALYSIS.minScored} 晚有評分）` : signed(cmp.metricDeltas[key])}</p>`).join('')}</div>` : ''}
+  ${compareCustom ? '<button class="small" data-action="compare-reset">回到自動時段</button>' : ''}`;
 }
 function renderSeal() {
   const r=rewards(data),unlocks=[{level:1,emoji:'🦭',name:'小麻糬'},{level:3,emoji:'🦭💤',name:'睡覺麻糬'},{level:5,emoji:'🦭🐟',name:'早餐麻糬'},{level:10,emoji:'🦭🌙',name:'月光麻糬'},{level:15,emoji:'🦭✨',name:'圓麻糬'},{level:20,emoji:'🦭👑',name:'海灘霸主'}];
@@ -359,7 +467,19 @@ document.addEventListener('click', async event => {
   }
   if(action==='stats-range'){statsDays=Number(el.dataset.days);if(statsDays){statsEnd=localToday();statsStart=shiftDate(statsEnd,-(statsDays-1));}render();return;}
   if(action==='stats-type'){statsType=el.dataset.type;render();return;}
-  if(action==='chart-point'){toast(el.dataset.label);return;}
+  if(action==='trend-window'){rolling=Number(el.dataset.days);render();return;}
+  if(action==='stats-jump'){
+    const target=document.getElementById(el.dataset.target);if(!target)return;
+    if(target.tagName==='DETAILS'){target.open=true;openSections.add(target.dataset.keep);}
+    target.scrollIntoView({behavior:data.settings.reducedMotion?'auto':'smooth',block:'start'});return;
+  }
+  if(action==='chart-tap'){
+    const svg=el.ownerSVGElement,box=svg.getBoundingClientRect(),vx=(event.clientX-box.left)/box.width*svg.viewBox.baseVal.width,g=chartGeom(chartView);
+    let best=-1,distance=Infinity;
+    chartView.points.forEach((p,i)=>{if(!p.reliable)return;const d=Math.abs(g.x(i)-vx);if(d<distance){distance=d;best=i;}});
+    if(best>=0)moveChartCursor(svg,best);return;
+  }
+  if(action==='compare-reset'){compareCustom=null;render();return;}
   if(action==='export-json'){exportJSON();return;}
   if(action==='export-csv'){exportCSV();return;}
   if(action==='csv-daily'||action==='csv-dreams'){const daily=action==='csv-daily';download(csv(daily?window.csvDownloads.dailyRows:window.csvDownloads.dreamsRows),`nightmare-${daily?'daily':'dreams'}-${localToday()}.csv`,'text/csv;charset=utf-8');return;}
@@ -410,13 +530,20 @@ document.addEventListener('change',event=>{
   if((el.name==='sleepType'||el.name==='date')&&editor){readEditor();updateEditorSleepField();if(el.name==='sleepType')$('#type-note').hidden=false;scheduleDraft();return;}
   if(el.name==='seriesId'&&editor){readEditor();const s=data.series.find(s=>s.id===editor.seriesId);$('#series-background').innerHTML=s?`<p class="note">${esc(s.background||'還沒有背景。')}</p>`:'';scheduleDraft();return;}
   if(el.id==='stats-start'||el.id==='stats-end'){statsDays=0;if(el.id==='stats-start')statsStart=el.value;else statsEnd=el.value;render();return;}
-  if(el.id==='rolling'){rolling=Number(el.value);render();return;}
   if(el.id==='trend-metric'){trendMetric=el.value;render();return;}
-  if(el.dataset.compare){const range=el.dataset.compare==='a'?compareA:compareB;range[el.dataset.edge]=el.value;const parent=el.closest('details.card');parent.querySelector(':scope > div').innerHTML=renderCompare();return;}
+  if(el.dataset.compare){compareCustom??={a:previousRange(statsStart,statsEnd),b:{start:statsStart,end:statsEnd}};compareCustom[el.dataset.compare][el.dataset.edge]=el.value;el.closest('[data-compare-root]').innerHTML=renderCompare();return;}
   if(el.id==='reduced-motion'){const value=el.checked;if(!commit(next=>{next.settings.reducedMotion=value;}))el.checked=!value;return;}
   if(el.id==='import-file'){stageImport(el.files[0]);return;}
 });
-document.addEventListener('keydown',event=>{if((event.key==='Enter'||event.key===' ')&&event.target.matches('[data-action="chart-point"]')){event.preventDefault();toast(event.target.dataset.label);}});
+document.addEventListener('keydown',event=>{
+  const svg=event.target.closest?.('svg.chart');
+  if(!svg||!chartView||!['ArrowLeft','ArrowRight'].includes(event.key))return;
+  event.preventDefault();
+  const step=event.key==='ArrowLeft'?-1:1;let i=chartView.cursor+step;
+  while(i>=0&&i<chartView.points.length&&!chartView.points[i].reliable)i+=step;
+  if(i>=0&&i<chartView.points.length)moveChartCursor(svg,i);
+});
+document.addEventListener('toggle',event=>{const id=event.target.dataset?.keep;if(!id)return;if(event.target.open)openSections.add(id);else openSections.delete(id);},true);
 $('#settings-button').addEventListener('click',()=>{if(editor)persistDraft();showSettings();});
 document.querySelectorAll('.bottom-nav a,.brand').forEach(link=>link.addEventListener('click',event=>{
   if(editor&&!persistDraft()){event.preventDefault();return;}editor=null;

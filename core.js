@@ -69,53 +69,163 @@ export function saveFeedback(before, after, isEdit) {
 }
 export const mean = values => { const filled = values.filter(v => typeof v === 'number' && Number.isFinite(v)); return filled.length ? filled.reduce((a, b) => a + b, 0) / filled.length : null; };
 export const validSleepHours = value => value === null || typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 24;
-export function sleepAnalysis(data, start, end) {
-  const recorded = data.daily.filter(day => day.date >= start && day.date <= end && day.status !== null);
+// Judgement-call thresholds. They only soften or hide numbers in the UI; they never change a stored value.
+export const ANALYSIS = { smallSample: 10, lowCoverage: 0.6, minGroupKnown: 5, minCompareKnown: 5, minScored: 3, minRated: 5, trendCoverage: 0.5 };
+export const RECURRING_TAG = '輪迴 / Recurring';
+const clampEnd = (end, today) => end < today ? end : today;
+export const daysInclusive = (start, end) => start > end ? 0 : Math.round((Date.parse(`${end}T12:00:00`) - Date.parse(`${start}T12:00:00`)) / 864e5) + 1;
+export function previousRange(start, end) { const days = daysInclusive(start, end); return { start: shiftDate(start, -days), end: shiftDate(start, -1) }; }
+// Night counts for [start, end]. Nights that have not finished (today) and future dates are never "missing";
+// records dated after today are reported as `ahead` and left out of every count.
+export function nightSummary(data, start, end, { today = dateKey() } = {}) {
+  const last = clampEnd(end, today), status = new Map();
+  let ahead = 0;
+  for (const day of data.daily) {
+    if (!day.status || day.date < start || day.date > end) continue;
+    if (day.date > today) ahead++; else status.set(day.date, day.status);
+  }
+  let yes = 0, no = 0, unknown = 0, missing = 0, pending = 0, days = 0;
+  for (let date = start; date <= last; date = shiftDate(date, 1)) {
+    days++;
+    const value = status.get(date);
+    if (value === 'yes') yes++; else if (value === 'no') no++; else if (value === 'unknown') unknown++;
+    else if (date < today) missing++; else pending++;
+  }
+  const known = yes + no, recorded = known + unknown, due = recorded + missing;
+  return { start, end: last, days, yes, no, unknown, known, recorded, missing, pending, due, ahead,
+    future: daysInclusive(start > today ? start : shiftDate(today, 1), end), coverage: due ? recorded / due : null, rate: known ? yes / known : null };
+}
+export function limitNotes(summary) {
+  const notes = [];
+  if (!summary.known) notes.push({ code: 'noKnown', text: '這段時間還沒有「確定有／沒有」噩夢的夜晚，暫時算不出噩夢率。' });
+  else if (summary.known < ANALYSIS.smallSample) notes.push({ code: 'smallSample', text: `目前只有 ${summary.known} 晚確定有／沒有噩夢，樣本偏少，比例容易大幅跳動，先當作參考就好。` });
+  if (summary.known && summary.coverage !== null && summary.coverage < ANALYSIS.lowCoverage) notes.push({ code: 'lowCoverage', text: `這段時間只記錄了 ${Math.round(summary.coverage * 100)}% 的夜晚，數字可能無法代表整段時間。` });
+  return notes;
+}
+// Rarity is an ordinal, subjective label: report counts, median and mode, never a mean.
+export function rarityDistribution(dreams) {
+  const counts = RARITIES.map(label => ({ label, count: dreams.filter(d => d.rarity === label).length }));
+  const rated = counts.reduce((sum, item) => sum + item.count, 0), peak = Math.max(0, ...counts.map(item => item.count));
+  const ordered = counts.flatMap(item => Array(item.count).fill(item.label));
+  let median = null;
+  if (rated) { const low = ordered[Math.ceil(rated / 2) - 1], high = ordered[Math.floor(rated / 2)]; median = low === high ? low : `${low}–${high}`; }
+  return { total: dreams.length, rated, unrated: dreams.length - rated, items: counts.map(item => ({ ...item, share: rated ? item.count / rated : null })), median, mode: peak ? counts.filter(item => item.count === peak).map(item => item.label) : [] };
+}
+export function sleepAnalysis(data, start, end, { today = dateKey() } = {}) {
+  const last = clampEnd(end, today);
+  const inWindow = data.daily.filter(day => day.date >= start && day.date <= last);
+  const recorded = inWindow.filter(day => day.status !== null);
   const eligible = recorded.filter(day => day.sleepHours !== null && validSleepHours(day.sleepHours));
+  const nightDreams = new Map();
+  for (const d of data.dreams) if (d.sleepType === 'night') { const list = nightDreams.get(d.date); if (list) list.push(d); else nightDreams.set(d.date, [d]); }
   const summarize = days => {
     const yes = days.filter(day => day.status === 'yes').length;
     const no = days.filter(day => day.status === 'no').length;
     const unknown = days.filter(day => day.status === 'unknown').length;
     const metrics = {};
-    for (const key of [...Object.keys(METRICS), 'rarity']) {
-      const nightly = days.filter(day => day.status === 'yes').map(day => mean(data.dreams.filter(d => d.sleepType === 'night' && d.date === day.date).map(d => key === 'rarity' ? (d.rarity ? RARITIES.indexOf(d.rarity) + 1 : null) : d[key])));
-      metrics[key] = { value: mean(nightly), count: nightly.filter(value => value !== null).length };
+    for (const key of Object.keys(METRICS)) {
+      const nightly = days.filter(day => day.status === 'yes').map(day => mean((nightDreams.get(day.date) || []).map(d => d[key])));
+      const count = nightly.filter(value => value !== null).length;
+      metrics[key] = { value: mean(nightly), count, units: nightly.length, missing: nightly.length - count };
     }
-    return { count: days.length, yes, no, unknown, known: yes + no, rate: yes + no ? yes / (yes + no) : null, recallUnknownRate: days.length ? unknown / days.length : null, meanHours: mean(days.map(day => day.sleepHours)), metrics };
+    return { count: days.length, yes, no, unknown, known: yes + no, rate: yes + no ? yes / (yes + no) : null, reliable: yes + no >= ANALYSIS.minGroupKnown, recallUnknownRate: days.length ? unknown / days.length : null, meanHours: mean(days.map(day => day.sleepHours)), metrics };
   };
   const groups = [{label:'少於 5 小時',min:0,max:5},{label:'5–未滿 7 小時',min:5,max:7},{label:'7–未滿 9 小時',min:7,max:9},{label:'9 小時以上',min:9,max:Infinity}].map(group => ({ label: group.label, ...summarize(eligible.filter(day => day.sleepHours >= group.min && day.sleepHours < group.max)) }));
-  return { ...summarize(eligible), recorded: recorded.length, missingHours: recorded.length - eligible.length, groups,
+  return { ...summarize(eligible), start, end: last, recorded: recorded.length, missingHours: recorded.length - eligible.length,
+    hoursOnly: inWindow.filter(day => day.status === null && day.sleepHours !== null).length, groups,
     byStatus: ['yes','no','unknown'].map(status => { const days = eligible.filter(day => day.status === status); return { status, count: days.length, meanHours: mean(days.map(day => day.sleepHours)) }; }) };
 }
-export const recurring = dream => Boolean(dream.seriesId) || dream.structures.includes('輪迴 / Recurring');
-export function statistics(data, start, end, type = 'night') {
-  const days = data.daily.filter(d => d.date >= start && d.date <= end);
-  const yes = days.filter(d => d.status === 'yes').length, no = days.filter(d => d.status === 'no').length, unknown = days.filter(d => d.status === 'unknown').length;
-  const dreams = data.dreams.filter(d => d.date >= start && d.date <= end && (type === 'all' || d.sleepType === type));
-  const night = type === 'night';
-  const units = night ? days.filter(d => d.status === 'yes').map(d => dreams.filter(e => e.date === d.date)) : dreams.map(d => [d]);
+export const recurring = dream => dream.structures.includes(RECURRING_TAG);
+export const inSeries = dream => Boolean(dream.seriesId);
+export function statistics(data, start, end, type = 'night', options = {}) {
+  const nights = nightSummary(data, start, end, options);
+  const dreams = data.dreams.filter(d => d.date >= start && d.date <= nights.end && (type === 'all' || d.sleepType === type));
+  const isNight = type === 'night';
+  const byDate = new Map();
+  for (const d of dreams) { const list = byDate.get(d.date); if (list) list.push(d); else byDate.set(d.date, [d]); }
+  // Night scope: one unit per nightmare night (several dreams merge). Nap / all scope: one unit per dream.
+  const units = isNight ? data.daily.filter(d => d.status === 'yes' && d.date >= start && d.date <= nights.end).map(d => byDate.get(d.date) || []) : dreams.map(d => [d]);
   const metrics = {};
-  for (const key of [...Object.keys(METRICS), 'rarity']) {
-    const scores = units.map(group => mean(group.map(d => key === 'rarity' ? (d.rarity ? RARITIES.indexOf(d.rarity) + 1 : null) : d[key])));
-    metrics[key] = { value: mean(scores), count: scores.filter(v => v !== null).length };
+  for (const key of Object.keys(METRICS)) {
+    const scores = units.map(group => mean(group.map(d => d[key])));
+    const count = scores.filter(v => v !== null).length;
+    metrics[key] = { value: mean(scores), count, units: units.length, missing: units.length - count };
   }
-  const categories = {};
+  // A unit with no label in a category is "not filled", not "does not have it": percentages use the filled units.
+  const categories = {}, categoryMeta = {};
   for (const key of Object.keys(DEFAULT_TAGS)) {
     const counts = new Map();
-    for (const group of units) for (const label of new Set(group.flatMap(d => d[key]))) counts.set(label, (counts.get(label) || 0) + 1);
-    categories[key] = [...counts].sort((a, b) => b[1] - a[1]).map(([label, count]) => ({ label, count, ratio: units.length ? count / units.length : null }));
+    let filled = 0;
+    for (const group of units) { const labels = new Set(group.flatMap(d => d[key])); if (labels.size) filled++; for (const label of labels) counts.set(label, (counts.get(label) || 0) + 1); }
+    categories[key] = [...counts].sort((a, b) => b[1] - a[1]).map(([label, count]) => ({ label, count, ratio: filled ? count / filled : null }));
+    categoryMeta[key] = { units: units.length, filled, unfilled: units.length - filled };
   }
-  return { yes, no, unknown, missing: datesBetween(start, end).length - yes - no - unknown, recorded: yes + no + unknown,
-    rate: yes + no ? yes / (yes + no) : null, dreams: dreams.length, units: units.length, metrics, categories,
-    recurring: units.filter(group => group.some(recurring)).length, rarity: RARITIES.map(label => ({ label, count: dreams.filter(d => d.rarity === label).length })) };
+  const countUnits = predicate => units.filter(group => group.some(predicate)).length;
+  return { ...nights, dreams: dreams.length, units: units.length, unit: isNight ? 'night' : 'dream', metrics, categories, categoryMeta, rarity: rarityDistribution(dreams),
+    recurring: countUnits(recurring), inSeries: countUnits(inSeries), recalled: countUnits(d => d.dreamMemory === 'yes') };
 }
-export function trend(data, start, end, type, windowDays) {
-  return datesBetween(start, end).map(date => {
-    const first = shiftDate(date, -(windowDays - 1));
-    const s = statistics(data, first, date, type);
-    const sleepHours = mean(data.daily.filter(day => day.date >= first && day.date <= date && day.status !== null).map(day => day.sleepHours));
-    return { date, rate: s.rate, dreams: s.dreams, sleepHours, ...Object.fromEntries(Object.entries(s.metrics).map(([k, v]) => [k, v.value])) };
+// Rolling windows ending on each date up to today. Values are raw; `samples` / `known` tell how much data stands behind them.
+export function trend(data, start, end, type, windowDays, { today = dateKey() } = {}) {
+  const last = clampEnd(end, today);
+  if (start > last) return [];
+  const dates = datesBetween(shiftDate(start, -(windowDays - 1)), last);
+  const statusOf = new Map(), hoursOf = new Map(), dreamsOf = new Map();
+  for (const day of data.daily) {
+    if (day.status) statusOf.set(day.date, day.status);
+    if (day.status !== null && day.sleepHours !== null) hoursOf.set(day.date, day.sleepHours);
+  }
+  for (const d of data.dreams) if (type === 'all' || d.sleepType === type) { const list = dreamsOf.get(d.date); if (list) list.push(d); else dreamsOf.set(d.date, [d]); }
+  const points = [];
+  for (let i = windowDays - 1; i < dates.length; i++) {
+    let yes = 0, no = 0, unknown = 0, due = 0, dreams = 0;
+    const hours = [], units = [];
+    for (const date of dates.slice(i - windowDays + 1, i + 1)) {
+      const status = statusOf.get(date), list = dreamsOf.get(date) || [];
+      if (status === 'yes') yes++; else if (status === 'no') no++; else if (status === 'unknown') unknown++;
+      if (status || date < today) due++;
+      dreams += list.length;
+      if (hoursOf.has(date)) hours.push(hoursOf.get(date));
+      if (type === 'night') { if (status === 'yes') units.push(list); } else for (const d of list) units.push([d]);
+    }
+    const known = yes + no, recorded = known + unknown;
+    const point = { date: dates[i], windowDays, yes, no, unknown, known, recorded, due, coverage: due ? recorded / due : null, rate: known ? yes / known : null,
+      dreams: recorded || dreams ? dreams : null, sleepHours: mean(hours), sleepSample: hours.length, samples: {} };
+    for (const key of Object.keys(METRICS)) { const scores = units.map(group => mean(group.map(d => d[key]))).filter(v => v !== null); point[key] = mean(scores); point.samples[key] = scores.length; }
+    points.push(point);
+  }
+  return points;
+}
+export const TREND_METRICS = {
+  rate: { label: '夜間噩夢率', kind: 'ratio', type: 'night', basis: '有噩夢的夜晚 ÷ 確定有／無的夜晚', sampleLabel: '晚確定有／無' },
+  nightmareNights: { label: '有噩夢的夜晚數', kind: 'count', type: 'night', basis: '窗口內有噩夢的夜晚數', sampleLabel: '晚有記錄' },
+  dreams: { label: '記錄到的夢境數（夜間＋午覺）', kind: 'count', type: 'all', basis: '窗口內記錄的夢境筆數', sampleLabel: '晚有記錄' },
+  sleepHours: { label: '夜間睡眠時數', kind: 'mean', type: 'night', basis: '有填時數的夜晚', sampleLabel: '晚有填時數' },
+  ...Object.fromEntries(Object.entries(METRICS).map(([key, label]) => [key, { label: `${label}（夜間）`, kind: 'mean', type: 'night', basis: '有噩夢且有評分的夜晚；同一晚多個夢先平均', sampleLabel: '晚有評分' }]))
+};
+export const trendMinSample = (metric, windowDays) => Object.hasOwn(METRICS, metric) ? ANALYSIS.minScored : Math.max(3, Math.ceil(windowDays * ANALYSIS.trendCoverage));
+// One metric as a plottable series. Only `reliable` points should be drawn: a window with too few valid
+// observations is reported as insufficient (never as 0), and a window with nothing at all as unavailable (null).
+export function trendSeries(data, start, end, metric, windowDays, options = {}) {
+  const def = TREND_METRICS[metric];
+  if (!def) throw new Error(`unknown trend metric: ${metric}`);
+  const min = trendMinSample(metric, windowDays);
+  const points = trend(data, start, end, def.type, windowDays, options).map(p => {
+    const [value, sample] = metric === 'rate' ? [p.rate, p.known]
+      : metric === 'nightmareNights' ? [p.recorded ? p.yes : null, p.recorded]
+      : metric === 'dreams' ? [p.dreams, p.recorded]
+      : metric === 'sleepHours' ? [p.sleepHours, p.sleepSample]
+      : [p[metric], p.samples[metric]];
+    return { date: p.date, value, sample, reliable: value !== null && sample >= min };
   });
+  return { metric, ...def, windowDays, min, points, plotted: points.filter(p => p.reliable).length,
+    insufficient: points.filter(p => p.value !== null && !p.reliable).length, unavailable: points.filter(p => p.value === null).length };
+}
+// Night-scope comparison of two periods. Differences are only computed when both sides have enough observations.
+export function comparePeriods(data, a, b, options = {}) {
+  const sa = statistics(data, a.start, a.end, 'night', options), sb = statistics(data, b.start, b.end, 'night', options);
+  const enough = sa.known >= ANALYSIS.minCompareKnown && sb.known >= ANALYSIS.minCompareKnown;
+  const metricDeltas = Object.fromEntries(Object.keys(METRICS).map(key => [key, sa.metrics[key].count >= ANALYSIS.minScored && sb.metrics[key].count >= ANALYSIS.minScored ? sb.metrics[key].value - sa.metrics[key].value : null]));
+  return { a: sa, b: sb, enough, rateDelta: enough ? sb.rate - sa.rate : null, metricDeltas, lengthsDiffer: sa.days !== sb.days };
 }
 export function validateData(input) {
   const fail = message => { throw new Error(`備份格式不正確：${message}`); };
