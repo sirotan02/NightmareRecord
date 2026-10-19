@@ -8,3 +8,32 @@ html.reduce-motion *,html.reduce-motion *::before,html.reduce-motion *::after{an
 
 /* Keep editing comfortable on iOS without focus zoom. */
 input,select,textarea{font-size:16px}.form-footer{bottom:calc(86px + env(safe-area-inset-bottom))}
+
+/* Editor: the sticky save bar is the only fixed element, so hide the bottom nav. */
+.editing .bottom-nav{display:none}
+.editing main{padding-bottom:calc(24px + env(safe-area-inset-bottom))}
+.editing .form-footer{bottom:0;padding:16px 0 calc(8px + env(safe-area-inset-bottom))}
+.editing .toast{bottom:calc(130px + env(safe-area-inset-bottom))}
+html:has(body.editing){scroll-padding-bottom:150px}
+
+/* Calendar: selected-day summary stays visible above the nav while the grid is on screen. */
+.day-bar{position:sticky;bottom:calc(86px + env(safe-area-inset-bottom));z-index:6;display:flex;align-items:center;gap:8px;margin:16px -10px 0;padding:10px;background:var(--raised);border:1px solid var(--mint);border-radius:16px;box-shadow:0 8px 24px #0006}
+.day-bar-text{flex:1;min-width:0;display:flex;flex-direction:column;font-size:.8rem;color:var(--muted);line-height:1.4}
+.day-bar-text strong{color:var(--ink);font-weight:550;font-size:.92rem}
+.day-bar button{flex:none;padding:6px 10px}
+#day-detail{scroll-margin-top:12px}
+
+/* Quick capture: short note, grouped tags, sleep-hours slider. */
+label.field>textarea.quick-note{min-height:80px}
+.tag-selected{font-size:.84rem;color:var(--mint);background:#b5cdb70b;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:0 0 12px;overflow-wrap:anywhere}
+.tag-cat{margin:0}
+.tag-cat h4{margin:16px 0 0;font-size:.82rem;font-weight:550;color:var(--muted);letter-spacing:.04em}
+.tag-cat .chips{margin:8px 0 4px}
+.hours-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:.88rem;color:var(--ink);margin-bottom:4px}
+.hours-head strong{color:var(--mint);font-weight:600;font-size:1.05rem}
+.hours-widget.unset .hours-head strong{color:var(--muted);font-weight:400;font-size:.9rem}
+.hours-slider{display:block;width:100%;min-height:44px;margin:0;padding:0;border:0;background:transparent;accent-color:var(--mint)}
+.hours-widget.unset .hours-slider{opacity:.55}
+.hours-scale{display:flex;justify-content:space-between;font-size:.72rem;color:var(--muted)}
+.hours-manual{display:flex;align-items:flex-end;gap:8px;margin:12px 0 18px}
+.hours-manual label.field{flex:1;margin:0}

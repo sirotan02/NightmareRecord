@@ -8,6 +8,22 @@ export const DEFAULT_TAGS = {
   structures: ['輪迴 / Recurring', '逃亡 / Chase', '侵入 / Intrusion', '敘事 / Narrative', '碎片 / Fragmented', '規則改變 / Rule Shift', '救援失敗 / Rescue Failure', '其他'],
   fearReasons: ['失去控制', '無法逃脫', '被追', '身體被傷害', '他人死亡', '無法保護重要的人', '安全的地方突然不安全', '周圍的人無法察覺', '被冒充 / 身份錯亂', '世界規則失效', '不知道接下來會發生甚麼', '被迫服從', '無法求助', '其他']
 };
+// Display-only grouping of DEFAULT_TAGS.contentTags; stored labels stay identical so existing data and statistics are unaffected.
+export const CONTENT_TAG_GROUPS = [
+  { label: '被追與困住', tags: ['被追逐', '被困', '迷路', '無法動彈', '無法求助', '墜落', '窒息 / 無法呼吸'] },
+  { label: '傷害與死亡', tags: ['威脅', '暴力', '死亡', '他人死亡', '自己受傷', '性威脅 / 性侵', '失去重要的人', '嘗試救人'] },
+  { label: '人物與關係', tags: ['家人', '伴侶', '陌生人', '冒充熟人', '背叛', '被拒絕 / 排斥', '被監視'] },
+  { label: '場景與異象', tags: ['安全場所失效', '超現實', '場景突然切換', '時間異常', '自然災害', '交通事故', '鬼怪 / 靈異', '身體異常', '牙齒脫落', '失憶'] },
+  { label: '壓力與失敗', tags: ['考試 / 學業', '工作 / 任務失敗', '遲到'] }
+];
+export const UNGROUPED_TAG_LABEL = '其他與自訂';
+export function groupContentTags(allTags) {
+  const known = new Set(CONTENT_TAG_GROUPS.flatMap(group => group.tags));
+  const present = new Set(allTags);
+  const groups = CONTENT_TAG_GROUPS.map(group => ({ label: group.label, tags: group.tags.filter(tag => present.has(tag)) }));
+  groups.push({ label: UNGROUPED_TAG_LABEL, tags: allTags.filter(tag => !known.has(tag)) });
+  return groups.filter(group => group.tags.length);
+}
 export const uid = () => globalThis.crypto.randomUUID();
 export function dateKey(date = new Date()) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
 export function shiftDate(value, days) { const d = new Date(`${value}T12:00:00`); d.setDate(d.getDate() + days); return dateKey(d); }
@@ -40,6 +56,16 @@ export function rewards(data) {
   for (const day of data.daily) if (day.status === 'yes' && !byDate.has(day.date)) byDate.set(day.date, 10);
   const exp = [...byDate.values()].reduce((a, b) => a + b, 0);
   return { exp, fish: data.daily.filter(d => d.status === 'no').length, level: 1 + Math.floor(exp / 100), progress: exp % 100 };
+}
+// `before` and `after` are rewards() results taken around a save; `isEdit` means the dream already existed.
+export function saveFeedback(before, after, isEdit) {
+  const gain = after.exp - before.exp;
+  if (isEdit) {
+    const base = '已更新這個夢。';
+    return gain === 0 ? base : `${base}經驗值已重新計算（${gain > 0 ? '+' : '−'}${Math.abs(gain)} EXP）。`;
+  }
+  if (gain <= 0) return '這個夢已經留下來了。這一天的經驗值已計算過。';
+  return `💀 → 🦭 NOM。這個夢留下來了，+${gain} EXP${after.level > before.level ? `，升到 Lv. ${after.level}` : ''}。`;
 }
 export const mean = values => { const filled = values.filter(v => typeof v === 'number' && Number.isFinite(v)); return filled.length ? filled.reduce((a, b) => a + b, 0) / filled.length : null; };
 export const validSleepHours = value => value === null || typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 24;

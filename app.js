@@ -1,4 +1,4 @@
-import { RARITIES, STATUS, METRICS, DEFAULT_TAGS, uid, dateKey, shiftDate, dayRecord, upsertDay, setNightStatus, saveDream, rewards, statistics, trend, validateData, mergeData, csv, validDate, sleepAnalysis } from './core.js';
+import { RARITIES, STATUS, METRICS, DEFAULT_TAGS, groupContentTags, uid, dateKey, shiftDate, dayRecord, upsertDay, setNightStatus, saveDream, rewards, saveFeedback, statistics, trend, validateData, mergeData, csv, validDate, sleepAnalysis } from './core.js';
 import { readData, writeData, recoverableImport, KEY, RECOVERY_KEY } from './storage.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -9,6 +9,7 @@ const score = n => n === null ? '—' : n.toFixed(1);
 const formatDate = value => new Date(`${value}T12:00:00`).toLocaleDateString('zh-HK', { month:'long', day:'numeric', weekday:'short' });
 const localToday = () => dateKey();
 const yesterday = () => shiftDate(localToday(), -1);
+const nightQuestion = date => date === yesterday() ? '昨晚怎樣？' : `${new Date(`${date}T12:00:00`).toLocaleDateString('zh-HK', { month:'long', day:'numeric' })}那晚怎樣？`;
 let data, loadError = '', snapshot = null;
 try { data = readData(); snapshot = localStorage.getItem(KEY); }
 catch (error) { loadError = error.message; data = { version:1, daily:[], dreams:[], series:[], settings:{customTags:{contentTags:[],structures:[],fearReasons:[]}, reducedMotion:false,lastExportAt:null,changedAt:null},drafts:{} }; }
@@ -41,7 +42,8 @@ function go(page) { editor = null; if (route() === page) render(); else location
 function empty(message, symbol='☾') { return `<div class="empty"><span aria-hidden="true">${symbol}</span>${esc(message)}</div>`; }
 function header(kicker, title, extra='') { return `<p class="eyebrow">${kicker}</p><div class="heading-row"><h1>${title}</h1>${extra}</div>`; }
 function render() {
-  document.title = `${editor ? '記一個夢' : { home:'昨晚怎樣？', calendar:'夢境日曆', stats:'慢慢觀察', seal:'海豹的小海灘' }[route()]} · Nightmare Eater`;
+  document.body.classList.toggle('editing', Boolean(editor));
+  document.title = `${editor ? '記一個夢' : { home:nightQuestion(homeDate), calendar:'夢境日曆', stats:'慢慢觀察', seal:'海豹的小海灘' }[route()]} · Nightmare Eater`;
   document.querySelectorAll('.bottom-nav a').forEach(a => { const active = a.dataset.page === route(); a.classList.toggle('active', active); if (active) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
   app.innerHTML = (loadError ? `<div class="note error">無法讀取原有資料，已停止寫入以保護內容。請到設定下載原始檔或還原備份。<br>${esc(loadError)}</div>` : '') +
     (conflict ? '<div class="note warning">另一個視窗已更新資料。請先在設定匯出此視窗內容，然後重新載入。</div>' : '') +
@@ -56,11 +58,11 @@ function sealCard() {
 function renderHome() {
   const day = dayRecord(data, homeDate), dreams = data.dreams.filter(d => d.date === homeDate);
   const backupDue = data.settings.changedAt && (!data.settings.lastExportAt || Date.now() - Date.parse(data.settings.lastExportAt) > 7 * 864e5) && (!data.settings.lastExportAt || data.settings.changedAt > data.settings.lastExportAt);
-  return `<div class="home-heading">${header('A LITTLE SPACE FOR LAST NIGHT', '昨晚怎樣？', `<label class="date-pill"><span class="sr-only">記錄日期</span><input id="home-date" type="date" value="${homeDate}" required></label>`)}<p class="intro">把夢留在這裡，讓今天輕一點。</p></div>
+  return `<div class="home-heading">${header(homeDate === yesterday() ? 'A LITTLE SPACE FOR LAST NIGHT' : 'A LITTLE SPACE FOR THAT NIGHT', nightQuestion(homeDate), `<label class="date-pill"><span class="sr-only">記錄日期</span><input id="home-date" type="date" value="${homeDate}" required></label>`)}<p class="intro">把夢留在這裡，讓今天輕一點。</p></div>
   ${data.drafts.editor ? '<div class="note row between"><span>有一個還沒餵給海豹的夢。</span><button class="small" data-action="resume-draft">繼續寫</button></div>' : ''}
-  ${day.status ? `<section class="card section-space"><p class="eyebrow">已經留下來了</p><h2>${STATUS[day.status]}</h2><p class="micro">${formatDate(homeDate)} · ${dreams.filter(d=>d.sleepType==='night').length} 個夜間夢</p><div class="row"><button data-action="edit-night" class="secondary">編輯狀態</button><button data-action="new-dream" data-type="night" data-date="${homeDate}" class="primary">＋再記一個夢</button></div></section>` : renderStatusOptions(homeDate)}
+  ${day.status ? `<section class="card section-space"><p class="eyebrow">已經留下來了</p><h2>${STATUS[day.status]}</h2><p class="micro">${formatDate(homeDate)}${day.status === 'yes' ? ` · ${dreams.filter(d=>d.sleepType==='night').length} 個夜間夢` : ''}</p>${day.status === 'yes' ? '' : `<p class="micro">要記下夢的話，這晚的狀態會改為「有噩夢」。</p>`}<div class="row"><button data-action="edit-night" class="secondary">編輯狀態</button><button data-action="new-dream" data-type="night" data-date="${homeDate}" class="primary">${day.status === 'yes' ? '＋再記一個夢' : '改為有噩夢並記錄'}</button></div></section>` : renderStatusOptions(homeDate)}
   <button class="quiet-link" data-action="new-dream" data-type="nap" data-date="${localToday()}">☀ ＋記午覺的夢</button>
-  <details class="section-space"><summary>夜間睡眠時數 <span class="micro">${day.sleepHours === null ? '想填再填' : `${day.sleepHours} 小時`}</span></summary><div><form id="hours-form" class="row"><label class="field" style="flex:1;margin:0">大約睡了幾小時？<input name="sleepHours" type="number" min="0" max="24" step="any" inputmode="decimal" value="${day.sleepHours ?? ''}" placeholder="例如 6.5；留空為未填"></label><button type="submit" class="small">保存</button></form></div></details>
+  <details class="section-space"><summary>夜間睡眠時數 <span class="micro">${day.sleepHours === null ? '想填再填' : `${day.sleepHours} 小時`}</span></summary><div><form id="hours-form">${hoursField({ name:'sleepHours', value:day.sleepHours, title:'大約睡了幾小時？' })}<button type="submit" class="small full">保存</button></form></div></details>
   ${dreams.length ? `<section class="section-space"><div class="card-title"><h2>這一天留下的夢</h2><span class="micro">${dreams.length} 個</span></div>${dreams.map(d=>dreamItem(d)).join('')}</section>` : ''}
   ${sealCard()}<p class="footnote">只存在這部裝置 · 不解夢，也不催你打卡</p>
   ${backupDue ? '<div class="note row between"><span>記得偶爾把夢帶走備份。</span><button class="small" data-action="settings">匯出 JSON</button></div>' : ''}`;
@@ -79,9 +81,33 @@ function scoreField(key, title, values, labels, help='') {
 function optionField(key, title, options) {
   return `<label class="field">${title}<select name="${key}"><option value="">未填</option>${options.map(([v,label])=>`<option value="${v}" ${editor[key]===v?'selected':''}>${label}</option>`).join('')}</select></label>`;
 }
+function tagSummaryText(key) {
+  return editor[key].length ? `已選：${editor[key].join('、')}` : '還沒選。點選夢裡出現的東西。';
+}
+function updateTagSummary(group) {
+  const out = group.querySelector('[data-tag-selected]');
+  if (out) out.textContent = tagSummaryText(group.dataset.tagGroup);
+}
 function tagField(key, title) {
   const tags = [...new Set([...DEFAULT_TAGS[key], ...data.settings.customTags[key], ...editor[key]])];
-  return `<div data-tag-group="${key}"><h3>${title}</h3><label class="sr-only" for="search-${key}">搜尋${title}</label><input id="search-${key}" data-tag-search="${key}" type="search" placeholder="搜尋或新增分類…"><div class="chips">${tags.map(label=>`<button type="button" data-action="tag" data-key="${key}" data-value="${esc(label)}" aria-pressed="${editor[key].includes(label)}" class="${editor[key].includes(label)?'selected':''}">${esc(label)}</button>`).join('')}</div><button type="button" class="text-button small" data-action="add-tag" data-key="${key}">＋新增分類</button></div>`;
+  const chip = label => `<button type="button" data-action="tag" data-key="${key}" data-value="${esc(label)}" aria-pressed="${editor[key].includes(label)}" class="${editor[key].includes(label)?'selected':''}">${esc(label)}</button>`;
+  const grouped = key === 'contentTags';
+  const body = grouped
+    ? groupContentTags(tags).map(group => `<section class="tag-cat"><h4>${esc(group.label)}</h4><div class="chips">${group.tags.map(chip).join('')}</div></section>`).join('')
+    : `<div class="chips">${tags.map(chip).join('')}</div>`;
+  return `<div data-tag-group="${key}"><h3>${title}</h3>${grouped ? `<p class="tag-selected" data-tag-selected aria-live="polite">${esc(tagSummaryText(key))}</p>` : ''}${body}<button type="button" class="text-button small" data-action="add-tag" data-key="${key}">＋新增分類</button></div>`;
+}
+function hoursField({ name, value, title, attrs = '' }) {
+  const set = value !== null && value !== undefined && value !== '';
+  return `<div class="hours-widget${set ? '' : ' unset'}"><div class="hours-head"><span>${title}</span><strong data-hours-display>${set ? esc(value) : '未填'}</strong></div><input type="range" class="hours-slider" data-hours-slider min="0" max="10" step="0.5" value="${set ? Math.min(Number(value), 10) : 5}" aria-label="${title}" aria-valuetext="${set ? `${esc(value)} 小時` : '未填'}" ${attrs.includes('disabled') ? 'disabled' : ''}><div class="hours-scale" aria-hidden="true"><span>0</span><span>5</span><span>10+</span></div><div class="hours-manual"><label class="field">超過 10 小時，或想填精確數字<input name="${name}" ${attrs} type="number" min="0" max="24" step="any" inputmode="decimal" value="${set ? esc(value) : ''}" placeholder="未填"></label><button type="button" class="text-button small" data-action="clear-hours">清除</button></div></div>`;
+}
+function syncHours(widget) {
+  const input = widget.querySelector('input[type="number"]'), slider = widget.querySelector('[data-hours-slider]');
+  const empty = input.value === '';
+  widget.classList.toggle('unset', empty);
+  if (!empty && Number.isFinite(Number(input.value))) slider.value = Math.min(Number(input.value), 10);
+  slider.setAttribute('aria-valuetext', empty ? '未填' : `${input.value} 小時`);
+  widget.querySelector('[data-hours-display]').textContent = empty ? '未填' : input.value;
 }
 function renderEditor() {
   const series = data.series.find(s=>s.id===editor.seriesId);
@@ -90,17 +116,18 @@ function renderEditor() {
   <form id="dream-form"><div class="card">
   <div class="date-range"><label class="field">日期<input name="date" type="date" value="${editor.date}" required></label><label class="field">來自哪段睡眠？<select name="sleepType"><option value="night" ${editor.sleepType==='night'?'selected':''}>☾ 夜間睡眠</option><option value="nap" ${editor.sleepType==='nap'?'selected':''}>☀ 午覺</option></select></label></div>
   <p id="type-note" class="note" hidden>分類已變更。請確認上方日期；已輸入的內容都保留了。</p>
-  <div id="editor-sleep" ${editor.sleepType==='nap'?'hidden':''}><label class="field">這晚大約睡了幾小時？（可略過）<input name="nightSleepHours" data-sleep-date="${editor.date}" type="number" min="0" max="24" step="any" inputmode="decimal" value="${esc(editorSleepHours() ?? '')}" placeholder="例如 6.5" ${editor.sleepType==='nap'?'disabled':''}></label><p class="micro">同一晚的夢共用睡眠時數。沒有噩夢或不記得的晚上也可以在首頁補填，讓比較更完整。</p></div>
+  <label class="field">一句話記下大概（可略過）<textarea class="quick-note" name="description" rows="2" placeholder="例如：在舊學校被追">${esc(editor.description)}</textarea></label>
+  <div id="editor-sleep" ${editor.sleepType==='nap'?'hidden':''}>${hoursField({ name:'nightSleepHours', value:editorSleepHours(), title:'這晚大約睡了幾小時？（可略過）', attrs:`data-sleep-date="${editor.date}" ${editor.sleepType==='nap'?'disabled':''}` })}<p class="micro">同一晚的夢共用睡眠時數。沒有噩夢或不記得的晚上也可以在首頁補填，讓比較更完整。</p></div>
   ${scoreField('rarity','這次是甚麼等級？',RARITIES,RARITIES,'普通爛夢|傳奇級大作')}
   ${Object.entries(METRICS).map(([key,label])=>scoreField(key,label,[0,1,2,3,4,5],['0','1','2','3','4','5'],key==='sleepDisruption'?'沒影響|睡爛了':key==='distress'?'幾乎沒影響|非常難受':'溫和|非常極端')).join('')}
-  </div><details class="card" id="details-panel" ${editor.description||editor.contentTags.length||editor.structures.length||editor.seriesId?'open':''}><summary>詳細記錄 <span class="micro">完全可略過</span></summary><div>
-  <details open><summary>夢的內容</summary><div><label class="field">發生了甚麼？<textarea name="description" rows="6" placeholder="一句也可以。想寫完整 lore，也可以。">${esc(editor.description)}</textarea></label>${tagField('contentTags','內容標籤')}</div></details>
-  <details><summary>夢的結構與可怕的原因</summary><div>${tagField('structures','夢的結構')}<div class="divider"></div>${tagField('fearReasons','為甚麼可怕？')}</div></details>
-  <details ${series?'open':''}><summary>系列與夢中記憶</summary><div><label class="field">屬於哪個系列？<select name="seriesId"><option value="">獨立的夢／未填</option>${data.series.map(s=>`<option value="${esc(s.id)}" ${s.id===editor.seriesId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><div id="series-background">${series?`<p class="note">${esc(series.background||'這個系列還沒有背景。')}</p>`:''}</div><button type="button" class="small" data-action="new-series">＋建立系列</button><div class="divider"></div>
+  </div><details class="card" id="details-panel" open><summary>快速標記 <span class="micro">夢裡有甚麼？點選即可</span></summary><div>
+  ${tagField('contentTags','內容標籤')}
+  <div class="divider"></div>${tagField('structures','夢的結構')}
+  <div class="divider"></div>${tagField('fearReasons','為甚麼可怕？')}
+  <div class="divider"></div><h3>系列與夢中記憶</h3><label class="field">屬於哪個系列？<select name="seriesId"><option value="">獨立的夢／未填</option>${data.series.map(s=>`<option value="${esc(s.id)}" ${s.id===editor.seriesId?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><div id="series-background">${series?`<p class="note">${esc(series.background||'這個系列還沒有背景。')}</p>`:''}</div><button type="button" class="small" data-action="new-series">＋建立系列</button><div class="divider"></div>
   ${optionField('dreamMemory','是否在夢中記起以前做過這個夢？',[['yes','是'],['no','否'],['unsure','不確定']])}
   ${optionField('predictedEvent','是否知道接下來會發生甚麼？',[['yes','是'],['no','否'],['unsure','不確定']])}
-  ${optionField('changedOutcome','是否成功改變結局？',[['yes','是'],['no','否'],['partially','部分改變']])}</div></details>
-  <details><summary>清醒程度</summary><div>${optionField('lucid','當時知道自己在做夢嗎？',[['no','不知道'],['unsure','可能'],['yes','知道']])}</div></details>
+  ${optionField('changedOutcome','是否成功改變結局？',[['yes','是'],['no','否'],['partially','部分改變']])}
   </div></details><div class="form-footer"><button type="submit" class="primary full">餵給海豹 🦭</button><div id="draft-status" class="form-status">未填不會算作零分 · 所有評分都可略過</div></div>
   <button type="button" class="text-button small full" data-action="discard-draft">捨棄這次編輯</button></form>`;
 }
@@ -108,7 +135,7 @@ function readEditor() {
   const form = $('#dream-form'); if (!form || !editor) return;
   const values = new FormData(form);
   for (const key of ['date','sleepType','description']) editor[key] = String(values.get(key));
-  for (const key of ['seriesId','dreamMemory','predictedEvent','changedOutcome','lucid']) editor[key] = values.get(key) || null;
+  for (const key of ['seriesId','dreamMemory','predictedEvent','changedOutcome']) editor[key] = values.get(key) || null;
   const hours = form.elements.namedItem('nightSleepHours');
   if (editor.sleepType === 'night' && hours.validity.valid && validDate(hours.dataset.sleepDate)) {
     editor.sleepHoursByDate ||= {};
@@ -120,6 +147,7 @@ function updateEditorSleepField() {
   const input = $('#dream-form [name="nightSleepHours"]');
   $('#editor-sleep').hidden = editor.sleepType === 'nap'; input.disabled = editor.sleepType === 'nap';
   input.dataset.sleepDate = editor.date; input.value = editorSleepHours() ?? '';
+  const widget = input.closest('.hours-widget'); widget.querySelector('[data-hours-slider]').disabled = editor.sleepType === 'nap'; syncHours(widget);
 }
 function persistDraft() {
   clearTimeout(draftTimer); if (!editor) return true; readEditor();
@@ -137,7 +165,12 @@ function dreamItem(d, compact=true) {
 }
 function renderDay(date) {
   const day = dayRecord(data,date), dreams = data.dreams.filter(d=>d.date===date);
-  return `<section class="card"><div class="card-title"><h2>${esc(formatDate(date))}</h2><button class="small secondary" data-action="day-edit" data-date="${date}">補記／編輯</button></div><p>${day.status?STATUS[day.status]:'— 夜間未記錄'} <span class="micro">${day.sleepHours!==null?`· 睡眠 ${day.sleepHours} 小時`:''}</span></p>${['night','nap'].map(type=>{const items=dreams.filter(d=>d.sleepType===type); return items.length?`<div class="divider"></div><h3>${type==='night'?'☾ 夜間的夢':'☀ 午覺的夢'}</h3>${items.map(d=>dreamItem(d)).join('')}`:'';}).join('')}${!dreams.length?'<p class="micro">還沒有夢境細節，隨時可以補。</p>':''}<div class="row section-space"><button class="small" data-action="new-dream" data-type="night" data-date="${date}">＋夜間夢</button><button class="small" data-action="new-dream" data-type="nap" data-date="${date}">＋午覺夢</button>${data.daily.some(d=>d.date===date)?`<button class="small danger" data-action="delete-day" data-date="${date}">刪除這天</button>`:''}</div></section>`;
+  return `<section class="card" id="day-detail"><div class="card-title"><h2>${esc(formatDate(date))}</h2><button class="small secondary" data-action="day-edit" data-date="${date}">補記／編輯</button></div><p>${day.status?STATUS[day.status]:'— 夜間未記錄'} <span class="micro">${day.sleepHours!==null?`· 睡眠 ${day.sleepHours} 小時`:''}</span></p>${['night','nap'].map(type=>{const items=dreams.filter(d=>d.sleepType===type); return items.length?`<div class="divider"></div><h3>${type==='night'?'☾ 夜間的夢':'☀ 午覺的夢'}</h3>${items.map(d=>dreamItem(d)).join('')}`:'';}).join('')}${!dreams.length?'<p class="micro">還沒有夢境細節，隨時可以補。</p>':''}<div class="row section-space"><button class="small" data-action="new-dream" data-type="night" data-date="${date}">${day.status==='no'||day.status==='unknown'?'改為有噩夢並記錄':'＋夜間夢'}</button><button class="small" data-action="new-dream" data-type="nap" data-date="${date}">＋午覺夢</button>${data.daily.some(d=>d.date===date)?`<button class="small danger" data-action="delete-day" data-date="${date}">刪除這天</button>`:''}</div></section>`;
+}
+function renderDayBar(date) {
+  const day = dayRecord(data,date), dreams = data.dreams.filter(d=>d.date===date);
+  const meta = [dreams.length ? `${dreams.length} 個夢` : '', day.sleepHours!==null ? `睡眠 ${day.sleepHours} 小時` : ''].filter(Boolean).join(' · ');
+  return `<div class="day-bar" role="status" aria-live="polite"><div class="day-bar-text"><strong>${esc(formatDate(date))}</strong><span>${day.status?STATUS[day.status]:'— 夜間未記錄'}${meta?` · ${meta}`:''}</span></div><button class="small" data-action="scroll-day">詳情</button><button class="small primary" data-action="day-edit" data-date="${date}">補記／編輯</button></div>`;
 }
 function renderCalendar() {
   if (calendarTab==='series') return `${header('FAMILIAR PLACES', '夢境系列')}<div class="segments"><button data-action="calendar-tab" data-tab="calendar">日曆</button><button class="selected" data-action="calendar-tab" data-tab="series">系列</button></div><p class="intro">不同的夢，也可能回到同一個地方。</p><button class="secondary full" data-action="new-series">＋建立系列</button>${data.series.length?data.series.map(renderSeries).join(''):empty('還沒有系列。再次遇見時，再幫它取個名字。','↻')}`;
@@ -147,7 +180,7 @@ function renderCalendar() {
     const key=`${month}-${String(i+1).padStart(2,'0')}`, day=dayRecord(data,key), nap=data.dreams.some(d=>d.date===key&&d.sleepType==='nap');
     const symbol={yes:'💀',no:'😴',unknown:'❓'}[day.status]||'—';
     return `<button class="calendar-day ${day.status?'recorded ':''}${key===selectedDate?'selected ':''}${key===localToday()?'today':''}" data-action="select-date" data-date="${key}" aria-label="${key} ${day.status?STATUS[day.status]:'夜間未記錄'}${nap?'，有午覺夢':''}" aria-pressed="${key===selectedDate}"><span class="day-number">${i+1}</span><span class="day-state" aria-hidden="true">${symbol}</span>${nap?'<span class="nap-dot">午覺</span>':''}</button>`;
-  }).join('')}</div><div class="calendar-legend"><span>💀 有噩夢</span><span>😴 沒有</span><span>❓ 不記得</span><span>— 未記錄</span><span>☀ 午覺另記</span></div></section>
+  }).join('')}</div><div class="calendar-legend"><span>💀 有噩夢</span><span>😴 沒有</span><span>❓ 不記得</span><span>— 未記錄</span><span>☀ 午覺另記</span></div>${renderDayBar(selectedDate)}</section>
   ${renderDay(selectedDate)}`;
 }
 function renderSeries(s) {
@@ -219,7 +252,7 @@ function showSettings() {
 function showDream(id) {
   const d=data.dreams.find(d=>d.id===id); if(!d)return;
   const labels={yes:'是',no:'否',unsure:'不確定',partially:'部分改變'};
-  showModal('留下的夢', `<p class="micro">${d.date} · ${formatDate(d.date)}</p>${dreamItem(d,false)}${Object.entries(DEFAULT_TAGS).map(([key])=>`<p class="micro">${{contentTags:'內容',structures:'結構',fearReasons:'可怕原因'}[key]}：${esc(d[key].join('、')||'未填')}</p>`).join('')}<p class="micro">夢中記起以前：${labels[d.dreamMemory]||'未填'}<br>知道接下來的事：${labels[d.predictedEvent]||'未填'}<br>改變結局：${labels[d.changedOutcome]||'未填'}<br>知道在做夢：${labels[d.lucid]||'未填'}</p><div class="modal-actions"><button class="danger" data-action="delete-dream" data-id="${esc(id)}">刪除</button><button class="primary" data-action="edit-dream" data-id="${esc(id)}">編輯這個夢</button></div>`);
+  showModal('留下的夢', `<p class="micro">${d.date} · ${formatDate(d.date)}</p>${dreamItem(d,false)}${Object.entries(DEFAULT_TAGS).map(([key])=>`<p class="micro">${{contentTags:'內容',structures:'結構',fearReasons:'可怕原因'}[key]}：${esc(d[key].join('、')||'未填')}</p>`).join('')}<p class="micro">夢中記起以前：${labels[d.dreamMemory]||'未填'}<br>知道接下來的事：${labels[d.predictedEvent]||'未填'}<br>改變結局：${labels[d.changedOutcome]||'未填'}${d.lucid?`<br>知道在做夢：${labels[d.lucid]}`:''}</p><div class="modal-actions"><button class="danger" data-action="delete-dream" data-id="${esc(id)}">刪除</button><button class="primary" data-action="edit-dream" data-id="${esc(id)}">編輯這個夢</button></div>`);
 }
 function showSeriesForm(id=null) {
   if(editor) { readEditor(); persistDraft(); }
@@ -284,17 +317,21 @@ document.addEventListener('click', async event => {
   }
   if(action==='tag'){
     readEditor();const list=editor[el.dataset.key],value=el.dataset.value,index=list.indexOf(value);if(index<0)list.push(value);else list.splice(index,1);
-    el.classList.toggle('selected',index<0);el.setAttribute('aria-pressed',String(index<0));scheduleDraft();return;
+    el.classList.toggle('selected',index<0);el.setAttribute('aria-pressed',String(index<0));updateTagSummary(el.closest('[data-tag-group]'));scheduleDraft();return;
+  }
+  if(action==='clear-hours'){
+    const widget=el.closest('.hours-widget');widget.querySelector('input[type="number"]').value='';syncHours(widget);if(editor){readEditor();scheduleDraft();}return;
   }
   if(action==='add-tag'){
-    const key=el.dataset.key,input=$(`[data-tag-search="${key}"]`),value=input.value.trim()||prompt('新分類名稱：')?.trim();if(!value)return;
+    const key=el.dataset.key,value=prompt('新分類名稱：')?.trim();if(!value)return;
     const exists=[...DEFAULT_TAGS[key],...data.settings.customTags[key]].includes(value);
     if(!exists&&!commit(next=>next.settings.customTags[key].push(value)))return;
     if(!editor[key].includes(value))editor[key].push(value);persistDraft();
     const container=el.closest('[data-tag-group]');container.outerHTML=tagField(key,{contentTags:'內容標籤',structures:'夢的結構',fearReasons:'為甚麼可怕？'}[key]);return;
   }
   if(action==='month'){const d=new Date(`${month}-01T12:00:00`);d.setMonth(d.getMonth()+Number(el.dataset.step));month=dateKey(d).slice(0,7);selectedDate=`${month}-01`;render();return;}
-  if(action==='select-date'){selectedDate=el.dataset.date;render();return;}
+  if(action==='select-date'){selectedDate=el.dataset.date;render();$('.calendar-day.selected')?.focus({preventScroll:true});return;}
+  if(action==='scroll-day'){$('#day-detail')?.scrollIntoView({behavior:data.settings.reducedMotion?'auto':'smooth',block:'start'});return;}
   if(action==='calendar-tab'){calendarTab=el.dataset.tab;render();return;}
   if(action==='day-edit'){homeDate=el.dataset.date;homeDateFollowsToday=false;go('home');window.scrollTo(0,0);return;}
   if(action==='delete-day'){
@@ -347,7 +384,8 @@ document.addEventListener('submit',event=>{
     event.preventDefault();clearTimeout(draftTimer);readEditor();if(!validDate(editor.date)){toast('請選擇有效日期。',true);return;}
     const {sleepHoursByDate,...dream}=structuredClone(editor);
     const hours = dream.sleepType==='night' ? editorSleepHours() : undefined;
-    if(commit(next=>{saveDream(next,dream,hours);delete next.drafts.editor;})){const date=dream.date;editor=null;homeDate=date;selectedDate=date;month=date.slice(0,7);const page=editorReturn;go(page);render();window.scrollTo(0,0);toast('💀 → 🦭 NOM。這個夢已經留下來了。');$('.seal-emoji')?.classList.add('feed-pulse');}return;
+    let isEdit=false,before=null,after=null;
+    if(commit(next=>{isEdit=next.dreams.some(d=>d.id===dream.id);before=rewards(next);saveDream(next,dream,hours);delete next.drafts.editor;after=rewards(next);})){const date=dream.date;editor=null;homeDate=date;selectedDate=date;month=date.slice(0,7);const page=editorReturn;go(page);render();window.scrollTo(0,0);toast(saveFeedback(before,after,isEdit));if(!isEdit&&after.exp>before.exp)$('.seal-emoji')?.classList.add('feed-pulse');}return;
   }
   if(event.target.id==='hours-form'){
     event.preventDefault();const raw=new FormData(event.target).get('sleepHours'),value=raw===''?null:Number(raw);
@@ -362,7 +400,8 @@ document.addEventListener('submit',event=>{
 });
 document.addEventListener('input',event=>{
   const el=event.target;
-  if(el.dataset.tagSearch){const group=el.closest('[data-tag-group]');const query=el.value.trim().toLocaleLowerCase();group.querySelectorAll('[data-action="tag"]').forEach(button=>{button.hidden=!button.dataset.value.toLocaleLowerCase().includes(query);});return;}
+  const widget=el.closest('.hours-widget');
+  if(widget){if(el.matches('[data-hours-slider]'))widget.querySelector('input[type="number"]').value=el.value;syncHours(widget);}
   if(el.closest('#dream-form')) {readEditor();scheduleDraft();}
 });
 document.addEventListener('change',event=>{

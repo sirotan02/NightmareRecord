@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyData, dateKey, shiftDate, validDate, upsertDay, setNightStatus, saveDream, rewards, statistics, trend, validateData, mergeData, csv, sleepAnalysis } from '../core.js';
+import { emptyData, DEFAULT_TAGS, CONTENT_TAG_GROUPS, UNGROUPED_TAG_LABEL, groupContentTags, dateKey, shiftDate, validDate, upsertDay, setNightStatus, saveDream, rewards, saveFeedback, statistics, trend, validateData, mergeData, csv, sleepAnalysis } from '../core.js';
 import { readData, writeData, recoverableImport, KEY, RECOVERY_KEY } from '../storage.js';
 const dream = (id,date,sleepType='night',patch={}) => ({ id,date,sleepType,rarity:null,distress:null,sleepDisruption:null,contentIntensity:null,description:'',contentTags:[],structures:[],fearReasons:[],seriesId:null,dreamMemory:null,predictedEvent:null,changedOutcome:null,lucid:null,...patch });
 const fixture = () => {
@@ -99,6 +99,34 @@ test('sleep associations weight each night once and ignore nap ratings and unfil
 test('sleep drafts preserve per-date values across JSON restore without changing existing records',()=>{
   const data=fixture();data.drafts.editor={...dream('draft','2026-10-12'),sleepHoursByDate:{'2026-10-12':6.5,'2026-10-13':null,'2026-10-14':0,'invalid':8,'2026-10-15':-1}};
   const restored=validateData(JSON.parse(JSON.stringify(data)));assert.deepEqual(restored.drafts.editor.sleepHoursByDate,{'2026-10-12':6.5,'2026-10-13':null,'2026-10-14':0});assert.deepEqual(restored.daily,data.daily);
+});
+test('save feedback reports the real EXP gain for a new dream and levels up',()=>{
+  const data=emptyData(),before=rewards(data);saveDream(data,dream('n1','2026-10-01','night',{rarity:'SR'}));
+  const after=rewards(data);assert.equal(after.exp-before.exp,50);assert.match(saveFeedback(before,after,false),/\+50 EXP/);
+  const big=emptyData(),b2=rewards(big);saveDream(big,dream('n2','2026-10-01','night',{rarity:'SSSR'}));assert.match(saveFeedback(b2,rewards(big),false),/\+500 EXP.*Lv\. 6/);
+});
+test('save feedback never claims EXP when the date was already counted',()=>{
+  const data=emptyData();saveDream(data,dream('n1','2026-10-01','night',{rarity:'SSR'}));
+  const before=rewards(data);saveDream(data,dream('n2','2026-10-01','night',{rarity:'N'}));
+  const after=rewards(data);assert.equal(after.exp,before.exp);assert.doesNotMatch(saveFeedback(before,after,false),/\+\d+ EXP|NOM/);
+});
+test('editing an existing dream does not announce earned EXP',()=>{
+  const data=emptyData();saveDream(data,dream('n1','2026-10-01','night',{rarity:'SR'}));
+  let before=rewards(data);saveDream(data,{...data.dreams[0],description:'更新'});
+  assert.equal(saveFeedback(before,rewards(data),true),'已更新這個夢。');
+  before=rewards(data);saveDream(data,{...data.dreams[0],rarity:'SSR'});
+  const message=saveFeedback(before,rewards(data),true);assert.match(message,/重新計算/);assert.doesNotMatch(message,/NOM|餵|留下來了/);
+  assert.equal(rewards(data).exp,150);
+});
+test('content tag groups cover every default tag exactly once and keep custom tags',()=>{
+  const grouped=CONTENT_TAG_GROUPS.flatMap(group=>group.tags);
+  assert.equal(new Set(grouped).size,grouped.length);
+  assert.deepEqual([...grouped].sort(),DEFAULT_TAGS.contentTags.filter(tag=>tag!=='其他').sort());
+  const groups=groupContentTags([...DEFAULT_TAGS.contentTags,'我的自訂']);
+  assert.deepEqual(groups.map(group=>group.label).at(-1),UNGROUPED_TAG_LABEL);
+  assert.deepEqual(groups.at(-1).tags,['其他','我的自訂']);
+  assert.equal(groups.flatMap(group=>group.tags).length,DEFAULT_TAGS.contentTags.length+1);
+  assert.deepEqual(groupContentTags(['被追逐']),[{label:'被追與困住',tags:['被追逐']}]);
 });
 test('sleep rolling averages count recorded nights once, include unknown and retain gaps',()=>{
   const data=emptyData();upsertDay(data,'2026-10-01',{status:'yes',sleepHours:4});upsertDay(data,'2026-10-02',{status:'unknown',sleepHours:8});upsertDay(data,'2026-10-03',{status:null,sleepHours:20});
